@@ -1,3 +1,5 @@
+import com.android.build.api.dsl.ManagedVirtualDevice
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -16,6 +18,18 @@ android {
         versionName = "0.1.0"
     }
     buildFeatures { compose = true }
+
+    testOptions {
+        managedDevices {
+            devices {
+                create<com.android.build.api.dsl.ManagedVirtualDevice>("pixel2Api35") {
+                    device = "Pixel 2"
+                    apiLevel = 35
+                    systemImageSource = "aosp"
+                }
+            }
+        }
+    }
 }
 
 dependencies {

@@ -44,6 +44,7 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
     val players = db.players().observeAll()
     val events = db.events().observeAll()
     val attendance = db.attendance().observeAll()
+    val absences = db.absences().observeAll()
 
     fun addPlayer(first: String, last: String, age: Int, position: String, guest: Boolean) =
         viewModelScope.launch { db.players().insert(Player(firstName = first, lastName = last, age = age, position = position, isGuest = guest)) }
@@ -64,6 +65,18 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
 
     fun saveAttendance(playerId: Long, eventId: Long, status: AttendanceStatus) =
         viewModelScope.launch { db.attendance().save(Attendance(playerId, eventId, status)) }
+
+    fun addAbsence(playerId: Long, reason: String, days: Int) = viewModelScope.launch {
+        val start = System.currentTimeMillis()
+        db.absences().insert(
+            Absence(
+                playerId = playerId,
+                startsAt = start,
+                endsAt = start + days.coerceAtLeast(1) * 86_400_000L,
+                reason = reason
+            )
+        )
+    }
 }
 
 @Composable
@@ -279,6 +292,7 @@ private fun AttendanceScreen(
     attendance: List<Attendance>,
     vm: MainViewModel
 ) {
+    var absencePlayer by remember { mutableStateOf<Player?>(null) }
     Column(Modifier.padding(16.dp)) {
         Text("Suivi des présences", style = MaterialTheme.typography.headlineSmall)
         if (events.isEmpty()) Text("Ajoutez une séance dans le calendrier pour commencer.")
@@ -289,17 +303,64 @@ private fun AttendanceScreen(
                     ?: AttendanceStatus.PRESENT
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("${player.firstName} ${player.lastName}", Modifier.padding(top = 12.dp))
-                    AssistChip(
-                        onClick = {
-                            vm.saveAttendance(
-                                player.id, event.id,
-                                if (current == AttendanceStatus.PRESENT) AttendanceStatus.ABSENT else AttendanceStatus.PRESENT
-                            )
-                        },
-                        label = { Text(if (current == AttendanceStatus.PRESENT) "Présent" else "Absent") }
-                    )
+                    Row {
+                        AssistChip(
+                            onClick = {
+                                vm.saveAttendance(
+                                    player.id, event.id,
+                                    if (current == AttendanceStatus.PRESENT) AttendanceStatus.ABSENT else AttendanceStatus.PRESENT
+                                )
+                            },
+                            label = { Text(if (current == AttendanceStatus.PRESENT) "Présent" else "Absent") }
+                        )
+                        IconButton(onClick = { absencePlayer = player }) {
+                            Icon(Icons.Default.DateRange, "Absence sur une période")
+                        }
+                    }
                 }
             }
         }
     }
+    absencePlayer?.let { player ->
+        AbsenceDialog(
+            player = player,
+            onDismiss = { absencePlayer = null },
+            onSave = { reason, days ->
+                vm.addAbsence(player.id, reason, days)
+                absencePlayer = null
+            }
+        )
+    }
+}
+
+@Composable
+private fun AbsenceDialog(
+    player: Player,
+    onDismiss: () -> Unit,
+    onSave: (String, Int) -> Unit
+) {
+    var reason by remember { mutableStateOf("Blessure") }
+    var days by remember { mutableStateOf("7") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Absence de ${player.firstName}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(reason, { reason = it }, label = { Text("Motif") })
+                OutlinedTextField(
+                    days,
+                    { days = it.filter(Char::isDigit) },
+                    label = { Text("Durée en jours") }
+                )
+                Text("L'absence commence aujourd'hui et couvre la période indiquée.")
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = reason.isNotBlank() && days.toIntOrNull() != null,
+                onClick = { onSave(reason, days.toIntOrNull() ?: 1) }
+            ) { Text("Enregistrer") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } }
+    )
 }

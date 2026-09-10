@@ -18,3 +18,16 @@ Application Android native pour gérer un collectif de volley, ses séances, ses
 - Tableau de bord avec taux d'absence.
 
 Ouvrir `volley-manager` dans Android Studio Ladybug ou plus récent, puis lancer `app`.
+
+## Émulateur inclus
+
+Le projet déclare un émulateur géré par Gradle nommé `pixel2Api35` (Pixel 2, Android API 35).
+Après installation de l'image système Android API 35 dans Android Studio, il est disponible
+dans la liste des appareils virtuels. Il peut aussi être démarré depuis le terminal :
+
+```bash
+./gradlew :app:pixel2Api35Debug
+```
+
+La tâche télécharge automatiquement l'image système si le SDK Android est correctement
+configuré (`ANDROID_HOME` ou `ANDROID_SDK_ROOT`).

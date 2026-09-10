@@ -219,6 +219,11 @@ private fun PlayerDialog(onDismiss: () -> Unit, onSave: (String, String, Int, St
 private fun CalendarScreen(events: List<VolleyEvent>, vm: MainViewModel) {
     var show by remember { mutableStateOf(false) }
     val format = remember { SimpleDateFormat("EEE d MMM · HH:mm", Locale.FRENCH) }
+    fun EventType.label() = when (this) {
+        EventType.TRAINING -> "Séance"
+        EventType.MATCH -> "Match"
+        EventType.EXCEPTIONAL -> "Exceptionnelle"
+    }
     Column(Modifier.padding(16.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Calendrier", style = MaterialTheme.typography.headlineSmall)
@@ -229,7 +234,7 @@ private fun CalendarScreen(events: List<VolleyEvent>, vm: MainViewModel) {
                 ListItem(
                     headlineContent = { Text("${event.title}${if (event.cancelled) " (ANNULÉE)" else ""}") },
                     supportingContent = {
-                        Text("${event.type.name.lowercase().replaceFirstChar(Char::uppercase)} · ${format.format(Date(event.startsAt))} · ${event.recurrence}")
+                        Text("${event.type.label()} · ${format.format(Date(event.startsAt))} · ${event.recurrence}")
                     },
                     trailingContent = {
                         if (!event.cancelled) {
@@ -253,7 +258,7 @@ private fun CalendarScreen(events: List<VolleyEvent>, vm: MainViewModel) {
 @Composable
 private fun EventDialog(onDismiss: () -> Unit, onSave: (String, String, EventType, String) -> Unit) {
     var title by remember { mutableStateOf("") }
-    var date by remember { mutableStateOf("") }
+    var date by remember { mutableStateOf(LocalDate.now().toString()) }
     var recurrence by remember { mutableStateOf("Aucune") }
     var type by remember { mutableStateOf(EventType.TRAINING) }
     AlertDialog(
@@ -262,14 +267,27 @@ private fun EventDialog(onDismiss: () -> Unit, onSave: (String, String, EventTyp
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(title, { title = it }, label = { Text("Nom") })
-                OutlinedTextField(date, { date = it }, label = { Text("Date obligatoire (AAAA-MM-JJ)") })
+                OutlinedTextField(
+                    date,
+                    { date = it },
+                    label = { Text("Date obligatoire (AAAA-MM-JJ)") },
+                    supportingText = { Text("La date du jour est proposée par défaut.") }
+                )
                 Text("Type")
                 Row {
                     EventType.entries.forEach { eventType ->
                         FilterChip(
                             selected = type == eventType,
                             onClick = { type = eventType },
-                            label = { Text(eventType.name) }
+                            label = {
+                                Text(
+                                    when (eventType) {
+                                        EventType.TRAINING -> "Séance"
+                                        EventType.MATCH -> "Match"
+                                        EventType.EXCEPTIONAL -> "Exceptionnelle"
+                                    }
+                                )
+                            }
                         )
                         Spacer(Modifier.width(4.dp))
                     }

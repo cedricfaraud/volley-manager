@@ -87,7 +87,7 @@ interface AbsenceDao {
     fun observeAll(): Flow<List<Absence>>
 }
 
-@Database(entities = [Player::class, VolleyEvent::class, EventGuest::class, Attendance::class, Absence::class], version = 2, exportSchema = false)
+@Database(entities = [Player::class, VolleyEvent::class, EventGuest::class, Attendance::class, Absence::class], version = 3, exportSchema = false)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun players(): PlayerDao

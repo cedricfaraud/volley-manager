@@ -5,6 +5,13 @@ on:
     branches: [ main ]
   pull_request:
 
+permissions:
+  contents: write
+
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -28,3 +35,18 @@ jobs:
           name: volley-manager-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+          retention-days: 30
+      - name: Prepare stable APK
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: cp app/build/outputs/apk/debug/app-debug.apk volley-manager-latest.apk
+      - name: Publish latest APK release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view latest >/dev/null 2>&1; then
+            gh release edit latest --target "$GITHUB_SHA" --title "Volley Manager - dernière version"
+          else
+            gh release create latest --target "$GITHUB_SHA" --title "Volley Manager - dernière version" --notes "APK debug générée automatiquement depuis main."
+          fi
+          gh release upload latest volley-manager-latest.apk --clobber

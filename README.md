@@ -2,6 +2,14 @@
 
 Application Android native pour gérer un collectif de volley, ses séances, ses matchs, les invités et le suivi des présences.
 
+## Télécharger la dernière APK
+
+Chaque commit validé sur `main` génère automatiquement une APK.
+
+[Télécharger la dernière version](https://github.com/cedricfaraud/volley-manager/releases/download/latest/volley-manager-latest.apk)
+
+La version disponible correspond uniquement au dernier build CI réussi.
+
 ## Choix techniques
 
 - Kotlin et Jetpack Compose pour une interface Android moderne.

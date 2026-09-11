@@ -91,7 +91,7 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
     fun addEvent(title: String, date: LocalDate, type: EventType, recurrenceDays: Set<Int>, recurrenceEnd: LocalDate?) =
         viewModelScope.launch {
             val recurrence = recurrenceDays.sorted().joinToString(",")
-            val end = recurrenceEnd ?: date
+            val end = recurrenceEnd ?: date.plusYears(1)
             var cursor = date
             while (!cursor.isAfter(end)) {
                 if (cursor == date || cursor.dayOfWeek.value - 1 in recurrenceDays) {
@@ -628,10 +628,9 @@ private fun EventDialog(
     var dateText by remember { mutableStateOf(initialDate.format(dateFormatter)) }
     var type by remember { mutableStateOf(EventType.TRAINING) }
     var recurring by remember { mutableStateOf(false) }
-    var selectedDays by remember { mutableStateOf(setOf<Int>()) }
-    var endDateText by remember { mutableStateOf(initialDate.plusMonths(1).format(dateFormatter)) }
+    var endDate by remember { mutableStateOf<LocalDate?>(null) }
+    var showEndDatePicker by remember { mutableStateOf(false) }
     val date = runCatching { LocalDate.parse(dateText, dateFormatter) }.getOrNull()
-    val endDate = runCatching { LocalDate.parse(endDateText, dateFormatter) }.getOrNull()
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Nouvel événement") },
@@ -642,22 +641,53 @@ private fun EventDialog(
                 Text("Type")
                 Row { EventType.entries.forEach { eventType -> FilterChip(selected = type == eventType, onClick = { type = eventType }, label = { Text(eventType.label()) }); Spacer(Modifier.width(4.dp)) } }
                 Row { Checkbox(recurring, { recurring = it }); Text("Séance récurrente", Modifier.padding(top = 12.dp)) }
-                if (recurring) fullWeekdays.forEachIndexed { index, day ->
-                    Row { Checkbox(index in selectedDays, { checked -> selectedDays = if (checked) selectedDays + index else selectedDays - index }); Text(day, Modifier.padding(top = 12.dp)) }
-                }
                 if (recurring) {
-                    OutlinedTextField(endDateText, { endDateText = it }, label = { Text("Fin de récurrence (AAAA-MM-JJ)") })
+                    Text(
+                        "Séance récurrente tous les ${date?.let { fullWeekdays[it.dayOfWeek.value - 1] } ?: "..."}.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Checkbox(endDate != null, { checked ->
+                            endDate = if (checked) (date ?: initialDate).plusMonths(1) else null
+                        })
+                        Text("Définir une date de fin (facultatif)")
+                    }
+                    OutlinedButton(
+                        onClick = { showEndDatePicker = true },
+                        enabled = endDate != null,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(endDate?.format(dateFormatter) ?: "Aucune date de fin")
+                    }
                 }
             }
         },
         confirmButton = {
             Button(
-                onClick = { onSave(title, date!!, type, if (recurring) selectedDays else emptySet(), if (recurring) endDate else null) },
-                enabled = title.isNotBlank() && date != null && (!recurring || (selectedDays.isNotEmpty() && endDate != null && !endDate.isBefore(date)))
+                onClick = { onSave(title, date!!, type, if (recurring) setOf(date.dayOfWeek.value - 1) else emptySet(), if (recurring) endDate else null) },
+                enabled = title.isNotBlank() && date != null && (!recurring || endDate == null || !endDate!!.isBefore(date))
             ) { Text("Ajouter") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } }
     )
+    if (showEndDatePicker) {
+        val initialMillis = endDate?.atStartOfDay(ZoneId.systemDefault())?.toInstant()?.toEpochMilli()
+        val datePickerState = rememberDatePickerState(initialSelectedDateMillis = initialMillis)
+        DatePickerDialog(
+            onDismissRequest = { showEndDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    datePickerState.selectedDateMillis?.let { millis ->
+                        endDate = java.time.Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDate()
+                    }
+                    showEndDatePicker = false
+                }) { Text("Valider") }
+            },
+            dismissButton = { TextButton(onClick = { showEndDatePicker = false }) { Text("Annuler") } }
+        ) {
+            DatePicker(state = datePickerState)
+        }
+    }
 }
 
 private fun eventDate(event: VolleyEvent) = java.time.Instant.ofEpochMilli(event.startsAt).atZone(ZoneId.systemDefault()).toLocalDate()

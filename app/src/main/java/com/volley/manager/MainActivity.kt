@@ -22,13 +22,18 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.volley.manager.data.*
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
+import java.time.DayOfWeek
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.ZoneId
-import java.util.*
+import java.time.format.DateTimeFormatter
+import java.time.temporal.TemporalAdjusters
+import java.util.Locale
 
 private val positions = listOf("Libéro", "Passeur", "Pointu", "Central", "R4")
-private val weekdays = listOf("Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche")
+private val weekdays = listOf("Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim")
+private val fullWeekdays = listOf("Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche")
+private val dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
 
 class MainActivity : ComponentActivity() {
     private val vm by viewModels<MainViewModel> {
@@ -52,39 +57,33 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
     val eventGuests = db.eventGuests().observeAll()
 
     fun addPlayer(first: String, last: String, age: Int, position: String, guest: Boolean) =
-        viewModelScope.launch {
-            db.players().insert(Player(firstName = first, lastName = last, age = age, position = position, isGuest = guest))
-        }
+        viewModelScope.launch { db.players().insert(Player(firstName = first, lastName = last, age = age, position = position, isGuest = guest)) }
 
     fun updatePlayer(player: Player, first: String, last: String, age: Int, position: String) =
-        viewModelScope.launch {
-            db.players().update(player.copy(firstName = first, lastName = last, age = age, position = position))
-        }
+        viewModelScope.launch { db.players().update(player.copy(firstName = first, lastName = last, age = age, position = position)) }
 
     fun setCollective(player: Player, inCollective: Boolean) =
         viewModelScope.launch { db.players().update(player.copy(isGuest = !inCollective)) }
 
     fun removePlayer(player: Player) = viewModelScope.launch { db.players().delete(player) }
 
-    fun addEvent(title: String, date: String, type: EventType, recurrenceDays: Set<Int>) =
+    fun addEvent(title: String, date: LocalDate, type: EventType, recurrenceDays: Set<Int>) =
         viewModelScope.launch {
-            val startsAt = LocalDate.parse(date).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
             db.events().insert(
-                VolleyEvent(title = title, type = type, startsAt = startsAt, durationMinutes = 120,
-                    recurrenceDays = recurrenceDays.sorted().joinToString(","))
+                VolleyEvent(
+                    title = title,
+                    type = type,
+                    startsAt = date.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli(),
+                    durationMinutes = 120,
+                    recurrenceDays = recurrenceDays.sorted().joinToString(",")
+                )
             )
         }
 
     fun cancel(event: VolleyEvent) = viewModelScope.launch { db.events().update(event.copy(cancelled = true)) }
     fun addGuest(eventId: Long, playerId: Long) = viewModelScope.launch { db.eventGuests().add(EventGuest(playerId, eventId)) }
-    fun removeGuest(eventId: Long, playerId: Long) = viewModelScope.launch { db.eventGuests().remove(EventGuest(playerId, eventId)) }
     fun saveAttendance(playerId: Long, eventId: Long, status: AttendanceStatus) =
         viewModelScope.launch { db.attendance().save(Attendance(playerId, eventId, status)) }
-
-    fun addAbsence(playerId: Long, reason: String, days: Int) = viewModelScope.launch {
-        val start = System.currentTimeMillis()
-        db.absences().insert(Absence(playerId = playerId, startsAt = start, endsAt = start + days.coerceAtLeast(1) * 86_400_000L, reason = reason))
-    }
 }
 
 @Composable
@@ -99,10 +98,11 @@ fun VolleyApp(vm: MainViewModel) {
             topBar = { TopAppBar(title = { Text("Volley Manager") }) },
             bottomBar = {
                 NavigationBar {
-                    listOf("Tableau", "Joueurs", "Calendrier", "Présences").forEachIndexed { index, label ->
+                    listOf("Tableau", "Joueurs", "Calendrier").forEachIndexed { index, label ->
                         NavigationBarItem(
-                            selected = tab == index, onClick = { tab = index },
-                            icon = { Icon(if (index == 0) Icons.Default.Dashboard else if (index == 1) Icons.Default.Groups else if (index == 2) Icons.Default.CalendarMonth else Icons.Default.HowToReg, label) },
+                            selected = tab == index,
+                            onClick = { tab = index },
+                            icon = { Icon(if (index == 0) Icons.Default.Dashboard else if (index == 1) Icons.Default.Groups else Icons.Default.CalendarMonth, label) },
                             label = { Text(label) }
                         )
                     }
@@ -113,8 +113,7 @@ fun VolleyApp(vm: MainViewModel) {
                 when (tab) {
                     0 -> Dashboard(players, events, attendance)
                     1 -> PlayersScreen(players, vm)
-                    2 -> CalendarScreen(events, players, guests, vm)
-                    else -> AttendanceScreen(players, events, guests, attendance, vm)
+                    else -> CalendarArea(events, players, guests, attendance, vm)
                 }
             }
         }
@@ -123,16 +122,19 @@ fun VolleyApp(vm: MainViewModel) {
 
 @Composable
 private fun Dashboard(players: List<Player>, events: List<VolleyEvent>, attendance: List<Attendance>) {
-    val absences = attendance.count { it.status == AttendanceStatus.ABSENT || it.status == AttendanceStatus.EXCUSED }
-    val rate = if (attendance.isEmpty()) 0 else absences * 100 / attendance.size
+    val collective = players.filterNot { it.isGuest }
+    val pastSessions = events.filter { it.type == EventType.TRAINING && !it.cancelled && eventDate(it).isBefore(LocalDate.now()) }
+    val absenceCount = attendance.count { it.status == AttendanceStatus.ABSENT && it.playerId in collective.map { p -> p.id } }
+    val expected = pastSessions.size * collective.size
     Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Vue d'ensemble", style = MaterialTheme.typography.headlineMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            MetricCard("Collectif", players.count { !it.isGuest }.toString(), Modifier.weight(1f))
+            MetricCard("Collectif", collective.size.toString(), Modifier.weight(1f))
             MetricCard("Invités", players.count { it.isGuest }.toString(), Modifier.weight(1f))
         }
-        MetricCard("Taux d'absence", "$rate %", Modifier.fillMaxWidth())
-        Text("${events.count { !it.cancelled }} événements planifiés")
+        MetricCard("Absence collectif", "${percent(absenceCount, expected)} %", Modifier.fillMaxWidth())
+        Text("${pastSessions.size} séance(s) passée(s) depuis le début de la saison")
+        Text("Les invités ne sont jamais inclus dans ces statistiques.")
     }
 }
 
@@ -143,24 +145,26 @@ private fun MetricCard(label: String, value: String, modifier: Modifier) {
 
 @Composable
 private fun PlayersScreen(players: List<Player>, vm: MainViewModel) {
-    var dialog by remember { mutableStateOf<Player?>(null) }
-    var create by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<Player?>(null) }
+    var creating by remember { mutableStateOf(false) }
     Column(Modifier.padding(16.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Joueurs", style = MaterialTheme.typography.headlineSmall)
-            Button({ create = true }) { Icon(Icons.Default.PersonAdd, null); Spacer(Modifier.width(6.dp)); Text("Ajouter") }
+            Button(onClick = { creating = true }) { Icon(Icons.Default.PersonAdd, null); Spacer(Modifier.width(6.dp)); Text("Ajouter") }
         }
         Text("Collectif", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
-        PlayerList(players.filterNot { it.isGuest }, vm, { dialog = it })
+        PlayerList(players.filterNot { it.isGuest }, vm) { editing = it }
         Text("Invités disponibles", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
-        PlayerList(players.filter { it.isGuest }, vm, { dialog = it })
+        PlayerList(players.filter { it.isGuest }, vm) { editing = it }
     }
-    if (create) PlayerDialog(null, false, { create = false }) { first, last, age, position, guest ->
-        vm.addPlayer(first, last, age, position, guest); create = false
+    if (creating) PlayerDialog(null, false, { creating = false }) { first, last, age, position, guest ->
+        vm.addPlayer(first, last, age, position, guest)
+        creating = false
     }
-    dialog?.let { player ->
-        PlayerDialog(player, player.isGuest, { dialog = null }) { first, last, age, position, _ ->
-            vm.updatePlayer(player, first, last, age, position); dialog = null
+    editing?.let { player ->
+        PlayerDialog(player, player.isGuest, { editing = null }) { first, last, age, position, _ ->
+            vm.updatePlayer(player, first, last, age, position)
+            editing = null
         }
     }
 }
@@ -174,10 +178,9 @@ private fun PlayerList(players: List<Player>, vm: MainViewModel, edit: (Player) 
                 supportingContent = { Text("${player.position} · ${player.age} ans") },
                 trailingContent = {
                     Row {
-                        IconButton({ edit(player) }) { Icon(Icons.Default.Edit, "Modifier") }
-                        IconButton({ vm.setCollective(player, player.isGuest) }) {
-                            Icon(if (player.isGuest) Icons.Default.PersonAdd else Icons.Default.PersonRemove,
-                                if (player.isGuest) "Ajouter au collectif" else "Retirer du collectif")
+                        IconButton(onClick = { edit(player) }) { Icon(Icons.Default.Edit, "Modifier") }
+                        IconButton(onClick = { vm.setCollective(player, player.isGuest) }) {
+                            Icon(if (player.isGuest) Icons.Default.PersonAdd else Icons.Default.PersonRemove, "Modifier collectif")
                         }
                     }
                 }
@@ -194,167 +197,216 @@ private fun PlayerDialog(player: Player?, guestDefault: Boolean, onDismiss: () -
     var position by remember { mutableStateOf(player?.position ?: positions.first()) }
     var guest by remember { mutableStateOf(guestDefault) }
     var expanded by remember { mutableStateOf(false) }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text(if (player == null) "Nouveau joueur" else "Modifier le joueur") }, text = {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(first, { first = it }, label = { Text("Prénom") })
-            OutlinedTextField(last, { last = it }, label = { Text("Nom") })
-            OutlinedTextField(age, { age = it.filter(Char::isDigit) }, label = { Text("Âge") })
-            ExposedDropdownMenuBox(expanded, { expanded = !expanded }) {
-                OutlinedTextField(position, {}, readOnly = true, label = { Text("Poste") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) }, modifier = Modifier.menuAnchor())
-                ExposedDropdownMenu(expanded, { expanded = false }) {
-                    positions.forEach { choice -> DropdownMenuItem({ Text(choice) }, { position = choice; expanded = false }) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (player == null) "Nouveau joueur" else "Modifier le joueur") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(first, { first = it }, label = { Text("Prénom") })
+                OutlinedTextField(last, { last = it }, label = { Text("Nom") })
+                OutlinedTextField(age, { age = it.filter(Char::isDigit) }, label = { Text("Âge") })
+                ExposedDropdownMenuBox(expanded, { expanded = !expanded }) {
+                    OutlinedTextField(position, {}, readOnly = true, label = { Text("Poste") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) }, modifier = Modifier.menuAnchor())
+                    ExposedDropdownMenu(expanded, { expanded = false }) {
+                        positions.forEach { choice -> DropdownMenuItem(text = { Text(choice) }, onClick = { position = choice; expanded = false }) }
+                    }
                 }
+                Row { Checkbox(guest, { guest = it }); Text("Hors collectif / invité", Modifier.padding(top = 12.dp)) }
             }
-            Row { Checkbox(guest, { guest = it }); Text("Hors collectif / invité", Modifier.padding(top = 12.dp)) }
-        }
-    }, confirmButton = {
-        Button(
-            onClick = { onSave(first, last, age.toInt(), position, guest) },
-            enabled = first.isNotBlank() && last.isNotBlank() && age.toIntOrNull() != null
-        ) { Text("Enregistrer") }
-    }, dismissButton = { TextButton(onDismiss) { Text("Annuler") } })
+        },
+        confirmButton = {
+            Button(onClick = { onSave(first, last, age.toInt(), position, guest) }, enabled = first.isNotBlank() && last.isNotBlank() && age.toIntOrNull() != null) { Text("Enregistrer") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } }
+    )
 }
 
 @Composable
-private fun CalendarScreen(events: List<VolleyEvent>, players: List<Player>, guests: List<EventGuest>, vm: MainViewModel) {
-    var show by remember { mutableStateOf(false) }
-    val format = remember { SimpleDateFormat("EEE d MMM", Locale.FRENCH) }
+private fun CalendarArea(
+    events: List<VolleyEvent>,
+    players: List<Player>,
+    guests: List<EventGuest>,
+    attendance: List<Attendance>,
+    vm: MainViewModel
+) {
+    var subTab by remember { mutableIntStateOf(0) }
+    var selectedDate by remember { mutableStateOf(LocalDate.now()) }
+    var selectedEvent by remember { mutableStateOf<VolleyEvent?>(null) }
     Column(Modifier.padding(16.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Calendrier", style = MaterialTheme.typography.headlineSmall)
-            Button({ show = true }) { Text("Ajouter") }
+        PrimaryTabRow(selectedTabIndex = subTab) {
+            listOf("Calendrier", "Présences", "Statistiques").forEachIndexed { index, label ->
+                Tab(selected = subTab == index, onClick = { subTab = index }, text = { Text(label) })
+            }
         }
-        LazyColumn {
-            items(events) { event ->
-                val eventGuestIds = guests.filter { it.eventId == event.id }.map { it.playerId }.toSet()
-                ListItem(
-                    headlineContent = { Text("${event.title}${if (event.cancelled) " (ANNULÉE)" else ""}") },
-                    supportingContent = { Text("${event.type.label()} · ${format.format(Date(event.startsAt))} · ${recurrenceLabel(event.recurrenceDays)}") },
-                    trailingContent = {
-                        Row {
-                            if (!event.cancelled) IconButton({ vm.cancel(event) }) { Icon(Icons.Default.EventBusy, "Annuler") }
-                            if (event.type == EventType.TRAINING) GuestPicker(players.filter { it.isGuest && it.id !in eventGuestIds }) { vm.addGuest(event.id, it.id) }
+        Spacer(Modifier.height(12.dp))
+        when (subTab) {
+            0 -> CalendarView(events, selectedDate, { selectedDate = it; subTab = 1 }, vm)
+            1 -> AttendanceView(events, players, guests, attendance, selectedDate, selectedEvent, { selectedEvent = it }, vm)
+            else -> StatisticsView(events, players, attendance)
+        }
+    }
+}
+
+@Composable
+private fun CalendarView(events: List<VolleyEvent>, selectedDate: LocalDate, onDate: (LocalDate) -> Unit, vm: MainViewModel) {
+    var month by remember { mutableStateOf(YearMonth.from(selectedDate)) }
+    var weekMode by remember { mutableStateOf(false) }
+    var showAdd by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(if (weekMode) "Semaine du ${month.atDay(1).format(dateFormatter)}" else month.month.name.lowercase().replaceFirstChar(Char::uppercase) + " ${month.year}", style = MaterialTheme.typography.titleLarge)
+            Row {
+                FilterChip(selected = !weekMode, onClick = { weekMode = false }, label = { Text("Mois") })
+                Spacer(Modifier.width(4.dp))
+                FilterChip(selected = weekMode, onClick = { weekMode = true }, label = { Text("Semaine") })
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            IconButton(onClick = { month = month.minusMonths(1) }) { Icon(Icons.Default.ChevronLeft, "Précédent") }
+            TextButton(onClick = { month = YearMonth.now(); onDate(LocalDate.now()) }) { Text("Aujourd'hui") }
+            IconButton(onClick = { month = month.plusMonths(1) }) { Icon(Icons.Default.ChevronRight, "Suivant") }
+        }
+        if (weekMode) {
+            val start = selectedDate.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+            WeekRow(start, events, selectedDate, onDate)
+        } else {
+            Row(Modifier.fillMaxWidth()) { weekdays.forEach { Text(it, Modifier.weight(1f), style = MaterialTheme.typography.labelSmall) } }
+            val first = month.atDay(1).with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+            for (week in 0..5) {
+                Row(Modifier.fillMaxWidth()) {
+                    for (dayIndex in 0..6) {
+                        val day = first.plusDays((week * 7 + dayIndex).toLong())
+                        val hasEvent = events.any { !it.cancelled && eventDate(it) == day }
+                        TextButton(onClick = { onDate(day) }, modifier = Modifier.weight(1f)) {
+                            Text(if (day.month == month.month) "${day.dayOfMonth}${if (hasEvent) " •" else ""}" else "")
                         }
                     }
+                }
+            }
+        }
+        Button(onClick = { showAdd = true }, modifier = Modifier.fillMaxWidth()) { Text("Ajouter une séance ou un match") }
+    }
+    if (showAdd) EventDialog({ showAdd = false }) { title, date, type, recurrence -> vm.addEvent(title, date, type, recurrence); showAdd = false }
+}
+
+@Composable
+private fun WeekRow(start: LocalDate, events: List<VolleyEvent>, selected: LocalDate, onDate: (LocalDate) -> Unit) {
+    Row(Modifier.fillMaxWidth()) {
+        (0..6).forEach { offset ->
+            val day = start.plusDays(offset.toLong())
+            val hasEvent = events.any { !it.cancelled && eventDate(it) == day }
+            TextButton(onClick = { onDate(day) }, modifier = Modifier.weight(1f)) {
+                Text("${weekdays[offset]}\n${day.dayOfMonth}${if (hasEvent) " •" else ""}")
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttendanceView(
+    events: List<VolleyEvent>,
+    players: List<Player>,
+    guests: List<EventGuest>,
+    attendance: List<Attendance>,
+    date: LocalDate,
+    selectedEvent: VolleyEvent?,
+    onEvent: (VolleyEvent?) -> Unit,
+    vm: MainViewModel
+) {
+    val dayEvents = events.filter { !it.cancelled && eventDate(it) == date }
+    Text("Séances du ${date.format(dateFormatter)}", style = MaterialTheme.typography.titleLarge)
+    if (dayEvents.isEmpty()) Text("Aucune séance à cette date.", Modifier.padding(top = 16.dp))
+    dayEvents.forEach { event ->
+        OutlinedButton(onClick = { onEvent(event) }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text(event.title) }
+    }
+    selectedEvent?.let { event ->
+        val guestIds = guests.filter { it.eventId == event.id }.map { it.playerId }.toSet()
+        val roster = players.filter { !it.isGuest || it.id in guestIds }
+        Text("Présences — ${event.title}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp))
+        roster.forEach { player ->
+            val current = attendance.firstOrNull { it.playerId == player.id && it.eventId == event.id }?.status ?: if (player.isGuest) AttendanceStatus.ABSENT else AttendanceStatus.PRESENT
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("${player.firstName} ${player.lastName}", Modifier.padding(top = 12.dp))
+                AssistChip(
+                    onClick = { vm.saveAttendance(player.id, event.id, if (current == AttendanceStatus.PRESENT) AttendanceStatus.ABSENT else AttendanceStatus.PRESENT) },
+                    label = { Text(if (current == AttendanceStatus.PRESENT) "Présent" else "Absent") }
                 )
             }
         }
     }
-    if (show) EventDialog({ show = false }) { title, date, type, days -> vm.addEvent(title, date, type, days); show = false }
 }
 
 @Composable
-private fun GuestPicker(available: List<Player>, onSelect: (Player) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    Box {
-        TextButton({ expanded = true }) { Icon(Icons.Default.PersonAdd, null); Text("Ajouter invité") }
-        DropdownMenu(expanded, { expanded = false }) {
-            available.forEach { player -> DropdownMenuItem({ Text("${player.firstName} ${player.lastName}") }, { onSelect(player); expanded = false }) }
-            if (available.isEmpty()) DropdownMenuItem({ Text("Aucun invité disponible") }, { expanded = false })
+private fun StatisticsView(events: List<VolleyEvent>, players: List<Player>, attendance: List<Attendance>) {
+    val collective = players.filterNot { it.isGuest }
+    val sessions = events.filter { it.type == EventType.TRAINING && !it.cancelled && eventDate(it).isBefore(LocalDate.now()) }
+    val currentMonth = YearMonth.now()
+    val monthSessions = sessions.filter { YearMonth.from(eventDate(it)) == currentMonth }
+    val seasonStart = sessions.minOfOrNull { eventDate(it) }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("Statistiques d'absence", style = MaterialTheme.typography.titleLarge)
+        Text("Saison : ${seasonStart?.format(dateFormatter) ?: "aucune séance passée"} → aujourd'hui")
+        Text("Séances passées : ${sessions.size} · ce mois-ci : ${monthSessions.size}")
+        MetricCard("Absence du collectif — saison", "${collectiveAbsenceRate(collective, sessions, attendance)} %", Modifier.fillMaxWidth())
+        MetricCard("Absence du collectif — mois", "${collectiveAbsenceRate(collective, monthSessions, attendance)} %", Modifier.fillMaxWidth())
+        Text("Suivi individuel", style = MaterialTheme.typography.titleMedium)
+        LazyColumn {
+            items(collective) { player ->
+                val season = playerAbsenceRate(player.id, sessions, attendance)
+                val month = playerAbsenceRate(player.id, monthSessions, attendance)
+                ListItem(
+                    headlineContent = { Text("${player.firstName} ${player.lastName}") },
+                    supportingContent = { Text("Saison : $season % · Mois : $month %") }
+                )
+            }
         }
+        Text("Les invités sont exclus du suivi collectif et individuel.")
     }
 }
 
 @Composable
-private fun EventDialog(onDismiss: () -> Unit, onSave: (String, String, EventType, Set<Int>) -> Unit) {
+private fun EventDialog(onDismiss: () -> Unit, onSave: (String, LocalDate, EventType, Set<Int>) -> Unit) {
     var title by remember { mutableStateOf("") }
-    var date by remember { mutableStateOf(LocalDate.now().toString()) }
+    var dateText by remember { mutableStateOf(LocalDate.now().format(dateFormatter)) }
     var type by remember { mutableStateOf(EventType.TRAINING) }
     var recurring by remember { mutableStateOf(false) }
     var selectedDays by remember { mutableStateOf(setOf<Int>()) }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text("Nouvel événement") }, text = {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(title, { title = it }, label = { Text("Nom") })
-            OutlinedTextField(date, { date = it }, label = { Text("Date obligatoire (AAAA-MM-JJ)") })
-            Text("Type")
-            Row {
-                EventType.entries.forEach { eventType ->
-                    FilterChip(
-                        selected = type == eventType,
-                        onClick = { type = eventType },
-                        label = { Text(eventType.label()) }
-                    )
-                    Spacer(Modifier.width(4.dp))
+    val date = runCatching { LocalDate.parse(dateText, dateFormatter) }.getOrNull()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Nouvel événement") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(title, { title = it }, label = { Text("Nom") })
+                OutlinedTextField(dateText, { dateText = it }, label = { Text("Date obligatoire (AAAA-MM-JJ)") })
+                Text("Type")
+                Row { EventType.entries.forEach { eventType -> FilterChip(selected = type == eventType, onClick = { type = eventType }, label = { Text(eventType.label()) }); Spacer(Modifier.width(4.dp)) } }
+                Row { Checkbox(recurring, { recurring = it }); Text("Séance récurrente", Modifier.padding(top = 12.dp)) }
+                if (recurring) fullWeekdays.forEachIndexed { index, day ->
+                    Row { Checkbox(index in selectedDays, { checked -> selectedDays = if (checked) selectedDays + index else selectedDays - index }); Text(day, Modifier.padding(top = 12.dp)) }
                 }
             }
-            Row { Checkbox(recurring, { recurring = it }); Text("Séance récurrente", Modifier.padding(top = 12.dp)) }
-            if (recurring) {
-                Text("Jours de récurrence")
-                weekdays.forEachIndexed { index, day ->
-                    Row {
-                        Checkbox(index in selectedDays, { selectedDays = if (it) selectedDays + index else selectedDays - index })
-                        Text(day, Modifier.padding(top = 12.dp))
-                    }
-                }
-            }
-        }
-    }, confirmButton = {
-        Button(
-            onClick = { onSave(title, date, type, if (recurring) selectedDays else emptySet()) },
-            enabled = title.isNotBlank() && runCatching { LocalDate.parse(date) }.isSuccess && (!recurring || selectedDays.isNotEmpty())
-        ) { Text("Ajouter") }
-    }, dismissButton = { TextButton(onDismiss) { Text("Annuler") } })
+        },
+        confirmButton = {
+            Button(onClick = { onSave(title, date!!, type, if (recurring) selectedDays else emptySet()) }, enabled = title.isNotBlank() && date != null && (!recurring || selectedDays.isNotEmpty())) { Text("Ajouter") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } }
+    )
 }
 
-@Composable
-private fun AttendanceScreen(players: List<Player>, events: List<VolleyEvent>, guests: List<EventGuest>, attendance: List<Attendance>, vm: MainViewModel) {
-    var date by remember { mutableStateOf(LocalDate.now().toString()) }
-    var absencePlayer by remember { mutableStateOf<Player?>(null) }
-    val format = remember { SimpleDateFormat("yyyy-MM-dd", Locale.ROOT) }
-    val selected = events.filter { format.format(Date(it.startsAt)) == date && !it.cancelled }
-    Column(Modifier.padding(16.dp)) {
-        Text("Présences à une date", style = MaterialTheme.typography.headlineSmall)
-        OutlinedTextField(date, { date = it }, label = { Text("Date (AAAA-MM-JJ)") })
-        if (selected.isEmpty()) Text("Aucun événement à cette date.", Modifier.padding(top = 16.dp))
-        selected.forEach { event ->
-            val invitedIds = guests.filter { it.eventId == event.id }.map { it.playerId }
-            val participants = players.filter { !it.isGuest || it.id in invitedIds }
-            Text(event.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp))
-            participants.forEach { player ->
-                val current = attendance.firstOrNull { it.playerId == player.id && it.eventId == event.id }?.status ?: AttendanceStatus.PRESENT
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("${player.firstName} ${player.lastName}", Modifier.padding(top = 12.dp))
-                    Row {
-                        AssistChip(
-                            onClick = {
-                                vm.saveAttendance(
-                                    player.id, event.id,
-                                    if (current == AttendanceStatus.PRESENT) AttendanceStatus.ABSENT else AttendanceStatus.PRESENT
-                                )
-                            },
-                            label = { Text(if (current == AttendanceStatus.PRESENT) "Présent" else "Absent") }
-                        )
-                        IconButton({ absencePlayer = player }) { Icon(Icons.Default.DateRange, "Absence sur une période") }
-                    }
-                }
-            }
-        }
-    }
-    absencePlayer?.let { player -> AbsenceDialog(player, { absencePlayer = null }) { reason, days -> vm.addAbsence(player.id, reason, days); absencePlayer = null } }
+private fun eventDate(event: VolleyEvent) = java.time.Instant.ofEpochMilli(event.startsAt).atZone(ZoneId.systemDefault()).toLocalDate()
+private fun percent(value: Int, total: Int) = if (total == 0) 0 else value * 100 / total
+private fun playerAbsenceRate(playerId: Long, sessions: List<VolleyEvent>, attendance: List<Attendance>) =
+    percent(sessions.count { event -> attendance.any { it.playerId == playerId && it.eventId == event.id && it.status == AttendanceStatus.ABSENT } }, sessions.size)
+private fun collectiveAbsenceRate(players: List<Player>, sessions: List<VolleyEvent>, attendance: List<Attendance>): Int {
+    val total = players.size * sessions.size
+    val absent = players.sumOf { player -> sessions.count { event -> attendance.any { it.playerId == player.id && it.eventId == event.id && it.status == AttendanceStatus.ABSENT } } }
+    return percent(absent, total)
 }
-
-@Composable
-private fun AbsenceDialog(player: Player, onDismiss: () -> Unit, onSave: (String, Int) -> Unit) {
-    var reason by remember { mutableStateOf("Blessure") }
-    var days by remember { mutableStateOf("7") }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text("Absence de ${player.firstName}") }, text = {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(reason, { reason = it }, label = { Text("Motif") })
-            OutlinedTextField(days, { days = it.filter(Char::isDigit) }, label = { Text("Durée en jours") })
-        }
-    }, confirmButton = {
-        Button(onClick = { onSave(reason, days.toInt()) }, enabled = reason.isNotBlank() && days.toIntOrNull() != null) {
-            Text("Enregistrer")
-        }
-    },
-        dismissButton = { TextButton(onDismiss) { Text("Annuler") } })
-}
-
 private fun EventType.label() = when (this) {
     EventType.TRAINING -> "Séance"
     EventType.MATCH -> "Match"
     EventType.EXCEPTIONAL -> "Exceptionnelle"
 }
-
 private fun recurrenceLabel(value: String) =
-    if (value.isBlank()) "Pas de récurrence" else value.split(",").mapNotNull { it.toIntOrNull() }.joinToString(", ") { weekdays[it] }
+    if (value.isBlank()) "Pas de récurrence" else value.split(",").mapNotNull { it.toIntOrNull() }.joinToString(", ") { fullWeekdays[it] }

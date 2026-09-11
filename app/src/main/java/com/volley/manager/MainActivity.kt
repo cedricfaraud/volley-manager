@@ -35,6 +35,17 @@ private val weekdays = listOf("Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim")
 private val fullWeekdays = listOf("Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche")
 private val dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
 
+private data class AppPalette(
+    val primary: Color,
+    val secondary: Color,
+    val tertiary: Color
+)
+
+private val paletteOptions = listOf(
+    Color(0xFF1565C0), Color(0xFF00897B), Color(0xFF6A1B9A),
+    Color(0xFFEF6C00), Color(0xFFC62828), Color(0xFF37474F)
+)
+
 class MainActivity : ComponentActivity() {
     private val vm by viewModels<MainViewModel> {
         object : ViewModelProvider.Factory {
@@ -67,17 +78,26 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
 
     fun removePlayer(player: Player) = viewModelScope.launch { db.players().delete(player) }
 
-    fun addEvent(title: String, date: LocalDate, type: EventType, recurrenceDays: Set<Int>) =
+    fun addEvent(title: String, date: LocalDate, type: EventType, recurrenceDays: Set<Int>, recurrenceEnd: LocalDate?) =
         viewModelScope.launch {
-            db.events().insert(
-                VolleyEvent(
-                    title = title,
-                    type = type,
-                    startsAt = date.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli(),
-                    durationMinutes = 120,
-                    recurrenceDays = recurrenceDays.sorted().joinToString(",")
-                )
-            )
+            val recurrence = recurrenceDays.sorted().joinToString(",")
+            val end = recurrenceEnd ?: date
+            var cursor = date
+            while (!cursor.isAfter(end)) {
+                if (cursor == date || cursor.dayOfWeek.value - 1 in recurrenceDays) {
+                    db.events().insert(
+                        VolleyEvent(
+                            title = title,
+                            type = type,
+                            startsAt = cursor.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli(),
+                            durationMinutes = 120,
+                            recurrenceDays = if (cursor == date) recurrence else "",
+                            recurrenceEndAt = if (cursor == date) recurrenceEnd?.atStartOfDay(ZoneId.systemDefault())?.toInstant()?.toEpochMilli() else null
+                        )
+                    )
+                }
+                cursor = cursor.plusDays(1)
+            }
         }
 
     fun cancel(event: VolleyEvent) = viewModelScope.launch { db.events().update(event.copy(cancelled = true)) }
@@ -89,13 +109,20 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
 @Composable
 fun VolleyApp(vm: MainViewModel) {
     var tab by remember { mutableIntStateOf(0) }
+    var palette by remember { mutableStateOf(AppPalette(Color(0xFF1565C0), Color(0xFF00897B), Color(0xFF6A1B9A))) }
+    var showPalette by remember { mutableStateOf(false) }
     val players by vm.players.collectAsStateWithLifecycle(emptyList())
     val events by vm.events.collectAsStateWithLifecycle(emptyList())
     val attendance by vm.attendance.collectAsStateWithLifecycle(emptyList())
     val guests by vm.eventGuests.collectAsStateWithLifecycle(emptyList())
-    MaterialTheme(colorScheme = lightColorScheme(primary = Color(0xFF1565C0))) {
+    MaterialTheme(colorScheme = lightColorScheme(primary = palette.primary, secondary = palette.secondary, tertiary = palette.tertiary)) {
         Scaffold(
-            topBar = { TopAppBar(title = { Text("Volley Manager") }) },
+            topBar = {
+                TopAppBar(
+                    title = { Text("Volley Manager", style = MaterialTheme.typography.titleLarge) },
+                    actions = { IconButton(onClick = { showPalette = true }) { Icon(Icons.Default.Palette, "Personnaliser les couleurs") } }
+                )
+            },
             bottomBar = {
                 NavigationBar {
                     listOf("Tableau", "Joueurs", "Calendrier").forEachIndexed { index, label ->
@@ -116,8 +143,51 @@ fun VolleyApp(vm: MainViewModel) {
                     else -> CalendarArea(events, players, guests, attendance, vm)
                 }
             }
+            if (showPalette) {
+                PaletteDialog(palette, { showPalette = false }) { palette = it; showPalette = false }
+            }
         }
     }
+}
+
+@Composable
+private fun PaletteDialog(current: AppPalette, onDismiss: () -> Unit, onSave: (AppPalette) -> Unit) {
+        var primary by remember { mutableStateOf(current.primary) }
+        var secondary by remember { mutableStateOf(current.secondary) }
+        var tertiary by remember { mutableStateOf(current.tertiary) }
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("Personnaliser l'apparence") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Choisissez trois couleurs pour votre club.")
+                    listOf("Principale" to primary, "Secondaire" to secondary, "Tertiaire" to tertiary).forEach { (label, selected) ->
+                        Text(label, style = MaterialTheme.typography.labelLarge)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            paletteOptions.forEach { color ->
+                                FilterChip(
+                                    selected = selected == color,
+                                    onClick = {
+                                        when (label) {
+                                            "Principale" -> primary = color
+                                            "Secondaire" -> secondary = color
+                                            else -> tertiary = color
+                                        }
+                                    },
+                                    label = { Text("  ") },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = color,
+                                        containerColor = color.copy(alpha = .18f)
+                                    )
+                                )
+                        }
+                    }
+                }
+            }
+            },
+            confirmButton = { Button(onClick = { onSave(AppPalette(primary, secondary, tertiary)) }) { Text("Appliquer") } },
+            dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } }
+        )
 }
 
 @Composable
@@ -232,6 +302,7 @@ private fun CalendarArea(
     var subTab by remember { mutableIntStateOf(0) }
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
     var selectedEvent by remember { mutableStateOf<VolleyEvent?>(null) }
+    var showAddForDate by remember { mutableStateOf<LocalDate?>(null) }
     Column(Modifier.padding(16.dp)) {
         PrimaryTabRow(selectedTabIndex = subTab) {
             listOf("Calendrier", "Présences", "Statistiques").forEachIndexed { index, label ->
@@ -240,9 +311,23 @@ private fun CalendarArea(
         }
         Spacer(Modifier.height(12.dp))
         when (subTab) {
-            0 -> CalendarView(events, selectedDate, { selectedDate = it; subTab = 1 }, vm)
+            0 -> CalendarView(events, selectedDate, { date ->
+                selectedDate = date
+                if (events.any { !it.cancelled && eventDate(it) == date }) {
+                    selectedEvent = events.firstOrNull { !it.cancelled && eventDate(it) == date }
+                    subTab = 1
+                } else {
+                    showAddForDate = date
+                }
+            }, vm)
             1 -> AttendanceView(events, players, guests, attendance, selectedDate, selectedEvent, { selectedEvent = it }, vm)
             else -> StatisticsView(events, players, attendance)
+        }
+    }
+    showAddForDate?.let { date ->
+        EventDialog(initialDate = date, onDismiss = { showAddForDate = null }) { title, eventDate, type, recurrence, recurrenceEnd ->
+            vm.addEvent(title, eventDate, type, recurrence, recurrenceEnd)
+            showAddForDate = null
         }
     }
 }
@@ -276,9 +361,12 @@ private fun CalendarView(events: List<VolleyEvent>, selectedDate: LocalDate, onD
                 Row(Modifier.fillMaxWidth()) {
                     for (dayIndex in 0..6) {
                         val day = first.plusDays((week * 7 + dayIndex).toLong())
-                        val hasEvent = events.any { !it.cancelled && eventDate(it) == day }
+                        val dayEvents = events.filter { !it.cancelled && eventDate(it) == day }
                         TextButton(onClick = { onDate(day) }, modifier = Modifier.weight(1f)) {
-                            Text(if (day.month == month.month) "${day.dayOfMonth}${if (hasEvent) " •" else ""}" else "")
+                            Text(
+                                if (day.month == month.month) "${day.dayOfMonth}${if (dayEvents.isNotEmpty()) " •" else ""}" else "",
+                                color = dayEvents.firstOrNull()?.let(::eventColor) ?: LocalContentColor.current
+                            )
                         }
                     }
                 }
@@ -286,7 +374,10 @@ private fun CalendarView(events: List<VolleyEvent>, selectedDate: LocalDate, onD
         }
         Button(onClick = { showAdd = true }, modifier = Modifier.fillMaxWidth()) { Text("Ajouter une séance ou un match") }
     }
-    if (showAdd) EventDialog({ showAdd = false }) { title, date, type, recurrence -> vm.addEvent(title, date, type, recurrence); showAdd = false }
+    if (showAdd) EventDialog(onDismiss = { showAdd = false }) { title, date, type, recurrence, recurrenceEnd ->
+        vm.addEvent(title, date, type, recurrence, recurrenceEnd)
+        showAdd = false
+    }
 }
 
 @Composable
@@ -294,9 +385,12 @@ private fun WeekRow(start: LocalDate, events: List<VolleyEvent>, selected: Local
     Row(Modifier.fillMaxWidth()) {
         (0..6).forEach { offset ->
             val day = start.plusDays(offset.toLong())
-            val hasEvent = events.any { !it.cancelled && eventDate(it) == day }
+            val dayEvents = events.filter { !it.cancelled && eventDate(it) == day }
             TextButton(onClick = { onDate(day) }, modifier = Modifier.weight(1f)) {
-                Text("${weekdays[offset]}\n${day.dayOfMonth}${if (hasEvent) " •" else ""}")
+                Text(
+                    "${weekdays[offset]}\n${day.dayOfMonth}${if (dayEvents.isNotEmpty()) " •" else ""}",
+                    color = dayEvents.firstOrNull()?.let(::eventColor) ?: LocalContentColor.current
+                )
             }
         }
     }
@@ -365,13 +459,19 @@ private fun StatisticsView(events: List<VolleyEvent>, players: List<Player>, att
 }
 
 @Composable
-private fun EventDialog(onDismiss: () -> Unit, onSave: (String, LocalDate, EventType, Set<Int>) -> Unit) {
+private fun EventDialog(
+    initialDate: LocalDate = LocalDate.now(),
+    onDismiss: () -> Unit,
+    onSave: (String, LocalDate, EventType, Set<Int>, LocalDate?) -> Unit
+) {
     var title by remember { mutableStateOf("") }
-    var dateText by remember { mutableStateOf(LocalDate.now().format(dateFormatter)) }
+    var dateText by remember { mutableStateOf(initialDate.format(dateFormatter)) }
     var type by remember { mutableStateOf(EventType.TRAINING) }
     var recurring by remember { mutableStateOf(false) }
     var selectedDays by remember { mutableStateOf(setOf<Int>()) }
+    var endDateText by remember { mutableStateOf(initialDate.plusMonths(1).format(dateFormatter)) }
     val date = runCatching { LocalDate.parse(dateText, dateFormatter) }.getOrNull()
+    val endDate = runCatching { LocalDate.parse(endDateText, dateFormatter) }.getOrNull()
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Nouvel événement") },
@@ -385,10 +485,16 @@ private fun EventDialog(onDismiss: () -> Unit, onSave: (String, LocalDate, Event
                 if (recurring) fullWeekdays.forEachIndexed { index, day ->
                     Row { Checkbox(index in selectedDays, { checked -> selectedDays = if (checked) selectedDays + index else selectedDays - index }); Text(day, Modifier.padding(top = 12.dp)) }
                 }
+                if (recurring) {
+                    OutlinedTextField(endDateText, { endDateText = it }, label = { Text("Fin de récurrence (AAAA-MM-JJ)") })
+                }
             }
         },
         confirmButton = {
-            Button(onClick = { onSave(title, date!!, type, if (recurring) selectedDays else emptySet()) }, enabled = title.isNotBlank() && date != null && (!recurring || selectedDays.isNotEmpty())) { Text("Ajouter") }
+            Button(
+                onClick = { onSave(title, date!!, type, if (recurring) selectedDays else emptySet(), if (recurring) endDate else null) },
+                enabled = title.isNotBlank() && date != null && (!recurring || (selectedDays.isNotEmpty() && endDate != null && !endDate.isBefore(date)))
+            ) { Text("Ajouter") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } }
     )
@@ -410,3 +516,9 @@ private fun EventType.label() = when (this) {
 }
 private fun recurrenceLabel(value: String) =
     if (value.isBlank()) "Pas de récurrence" else value.split(",").mapNotNull { it.toIntOrNull() }.joinToString(", ") { fullWeekdays[it] }
+
+private fun eventColor(event: VolleyEvent) = when (event.type) {
+    EventType.TRAINING -> Color(0xFF2E7D32)
+    EventType.MATCH -> Color(0xFFC62828)
+    EventType.EXCEPTIONAL -> Color(0xFF7B1FA2)
+}

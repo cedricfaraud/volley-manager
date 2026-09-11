@@ -25,6 +25,7 @@ data class VolleyEvent(
     val startsAt: Long,
     val durationMinutes: Int,
     val recurrenceDays: String = "",
+    val recurrenceEndAt: Long? = null,
     val cancelled: Boolean = false
 )
 
@@ -86,7 +87,7 @@ interface AbsenceDao {
     fun observeAll(): Flow<List<Absence>>
 }
 
-@Database(entities = [Player::class, VolleyEvent::class, EventGuest::class, Attendance::class, Absence::class], version = 2)
+@Database(entities = [Player::class, VolleyEvent::class, EventGuest::class, Attendance::class, Absence::class], version = 2, exportSchema = false)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun players(): PlayerDao

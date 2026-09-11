@@ -15,9 +15,10 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
-      - name: Build debug APK
-        uses: gradle/gradle-build-action@v3
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: 8.10
-          build-root-directory: .
-          arguments: :app:assembleDebug
+          gradle-version: 8.10.2
+          cache-disabled: true
+      - name: Build debug APK
+        run: gradle :app:assembleDebug --no-daemon

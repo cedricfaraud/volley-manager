@@ -24,9 +24,12 @@ data class VolleyEvent(
     val type: EventType,
     val startsAt: Long,
     val durationMinutes: Int,
-    val recurrence: String = "Aucune",
+    val recurrenceDays: String = "",
     val cancelled: Boolean = false
 )
+
+@Entity(tableName = "event_guests", primaryKeys = ["playerId", "eventId"])
+data class EventGuest(val playerId: Long, val eventId: Long)
 
 @Entity(tableName = "attendance", primaryKeys = ["playerId", "eventId"])
 data class Attendance(
@@ -49,6 +52,7 @@ interface PlayerDao {
     @Query("SELECT * FROM players ORDER BY lastName, firstName")
     fun observeAll(): Flow<List<Player>>
     @Insert suspend fun insert(player: Player)
+    @Update suspend fun update(player: Player)
     @Delete suspend fun delete(player: Player)
 }
 
@@ -58,6 +62,14 @@ interface EventDao {
     fun observeAll(): Flow<List<VolleyEvent>>
     @Insert suspend fun insert(event: VolleyEvent)
     @Update suspend fun update(event: VolleyEvent)
+}
+
+@Dao
+interface EventGuestDao {
+    @Query("SELECT * FROM event_guests")
+    fun observeAll(): Flow<List<EventGuest>>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun add(guest: EventGuest)
+    @Delete suspend fun remove(guest: EventGuest)
 }
 
 @Dao
@@ -74,18 +86,19 @@ interface AbsenceDao {
     fun observeAll(): Flow<List<Absence>>
 }
 
-@Database(entities = [Player::class, VolleyEvent::class, Attendance::class, Absence::class], version = 1)
+@Database(entities = [Player::class, VolleyEvent::class, EventGuest::class, Attendance::class, Absence::class], version = 2)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun players(): PlayerDao
     abstract fun events(): EventDao
+    abstract fun eventGuests(): EventGuestDao
     abstract fun attendance(): AttendanceDao
     abstract fun absences(): AbsenceDao
 
     companion object {
         fun create(context: Context): AppDatabase = Room.databaseBuilder(
             context, AppDatabase::class.java, "volley-manager.db"
-        ).build()
+        ).fallbackToDestructiveMigration().build()
     }
 }
 

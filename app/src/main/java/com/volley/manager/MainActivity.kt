@@ -3,6 +3,7 @@
 package com.volley.manager
 
 import android.os.Bundle
+import android.content.Intent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -21,7 +22,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -77,11 +82,11 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
     val eventGuests = db.eventGuests().observeAll()
     val feedback = db.feedback().observeAll()
 
-    fun addPlayer(first: String, last: String, age: Int, position: String, guest: Boolean) =
-        viewModelScope.launch { db.players().insert(Player(firstName = first, lastName = last, age = age, position = position, isGuest = guest)) }
+    fun addPlayer(first: String, last: String, age: Int, position: String, guest: Boolean, email: String, phone: String, heightCm: Int?, jerseyNumber: Int?, notes: String) =
+        viewModelScope.launch { db.players().insert(Player(firstName = first, lastName = last, age = age, position = position, isGuest = guest, email = email, phone = phone, heightCm = heightCm, jerseyNumber = jerseyNumber, notes = notes)) }
 
-    fun updatePlayer(player: Player, first: String, last: String, age: Int, position: String) =
-        viewModelScope.launch { db.players().update(player.copy(firstName = first, lastName = last, age = age, position = position)) }
+    fun updatePlayer(player: Player, first: String, last: String, age: Int, position: String, email: String, phone: String, heightCm: Int?, jerseyNumber: Int?, notes: String) =
+        viewModelScope.launch { db.players().update(player.copy(firstName = first, lastName = last, age = age, position = position, email = email, phone = phone, heightCm = heightCm, jerseyNumber = jerseyNumber, notes = notes)) }
 
     fun setCollective(player: Player, inCollective: Boolean) =
         viewModelScope.launch { db.players().update(player.copy(isGuest = !inCollective)) }
@@ -204,6 +209,7 @@ private fun FeedbackDialog(feedback: List<Feedback>, onDismiss: () -> Unit, onSa
     var details by remember { mutableStateOf("") }
     var showJournal by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     val export = feedback.joinToString("\n\n") { "# ${it.category} — ${it.title}\n${it.details}" }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -217,13 +223,22 @@ private fun FeedbackDialog(feedback: List<Feedback>, onDismiss: () -> Unit, onSa
                         Spacer(Modifier.width(4.dp))
                     }
                 }
-                OutlinedTextField(title, { title = it }, label = { Text("Titre") })
-                OutlinedTextField(details, { details = it }, label = { Text("Description") }, minLines = 3)
+                OutlinedTextField(title, { title = it }, label = { Text("Titre") }, keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences))
+                OutlinedTextField(details, { details = it }, label = { Text("Description") }, minLines = 3, keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences))
                 TextButton(onClick = { showJournal = !showJournal }) { Text(if (showJournal) "Masquer l'historique" else "Voir l'historique (${feedback.size})") }
                 if (showJournal) {
                     feedback.take(5).forEach { Text("${it.category} — ${it.title}", style = MaterialTheme.typography.bodySmall) }
                     if (feedback.isNotEmpty()) TextButton(onClick = { clipboard.setText(AnnotatedString(export)) }) { Text("Copier pour GitHub Issues") }
                 }
+                TextButton(
+                    enabled = title.isNotBlank() && details.isNotBlank(),
+                    onClick = {
+                        val issueUrl = "https://github.com/cedricfaraud/volley-manager/issues/new" +
+                            "?title=${android.net.Uri.encode("$category — $title")}" +
+                            "&body=${android.net.Uri.encode(details)}"
+                        context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(issueUrl)))
+                    }
+                ) { Text("Créer une Issue GitHub") }
             }
         },
         confirmButton = {
@@ -333,13 +348,13 @@ private fun PlayersScreen(players: List<Player>, vm: MainViewModel) {
         Text("Invités disponibles", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
         PlayerList(players.filter { it.isGuest }, vm) { editing = it }
     }
-    if (creating) PlayerDialog(null, false, { creating = false }) { first, last, age, position, guest ->
-        vm.addPlayer(first, last, age, position, guest)
+    if (creating) PlayerDialog(null, false, { creating = false }) { first, last, age, position, guest, email, phone, heightCm, jerseyNumber, notes ->
+        vm.addPlayer(first, last, age, position, guest, email, phone, heightCm, jerseyNumber, notes)
         creating = false
     }
     editing?.let { player ->
-        PlayerDialog(player, player.isGuest, { editing = null }) { first, last, age, position, _ ->
-            vm.updatePlayer(player, first, last, age, position)
+        PlayerDialog(player, player.isGuest, { editing = null }) { first, last, age, position, _, email, phone, heightCm, jerseyNumber, notes ->
+            vm.updatePlayer(player, first, last, age, position, email, phone, heightCm, jerseyNumber, notes)
             editing = null
         }
     }
@@ -370,21 +385,27 @@ private fun PlayerList(players: List<Player>, vm: MainViewModel, edit: (Player) 
 }
 
 @Composable
-private fun PlayerDialog(player: Player?, guestDefault: Boolean, onDismiss: () -> Unit, onSave: (String, String, Int, String, Boolean) -> Unit) {
+private fun PlayerDialog(player: Player?, guestDefault: Boolean, onDismiss: () -> Unit, onSave: (String, String, Int, String, Boolean, String, String, Int?, Int?, String) -> Unit) {
     var first by remember { mutableStateOf(player?.firstName.orEmpty()) }
     var last by remember { mutableStateOf(player?.lastName.orEmpty()) }
     var age by remember { mutableStateOf((player?.age ?: 18).toString()) }
     var position by remember { mutableStateOf(player?.position ?: positions.first()) }
     var guest by remember { mutableStateOf(guestDefault) }
     var expanded by remember { mutableStateOf(false) }
+    var showDetails by remember { mutableStateOf(false) }
+    var email by remember { mutableStateOf(player?.email.orEmpty()) }
+    var phone by remember { mutableStateOf(player?.phone.orEmpty()) }
+    var height by remember { mutableStateOf(player?.heightCm?.toString().orEmpty()) }
+    var jerseyNumber by remember { mutableStateOf(player?.jerseyNumber?.toString().orEmpty()) }
+    var notes by remember { mutableStateOf(player?.notes.orEmpty()) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (player == null) "Nouveau joueur" else "Modifier le joueur") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(first, { first = it }, label = { Text("Prénom") })
-                OutlinedTextField(last, { last = it }, label = { Text("Nom") })
-                OutlinedTextField(age, { age = it.filter(Char::isDigit) }, label = { Text("Âge") })
+                OutlinedTextField(first, { first = it }, label = { Text("Prénom") }, keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words))
+                OutlinedTextField(last, { last = it }, label = { Text("Nom") }, keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words))
+                OutlinedTextField(age, { age = it.filter(Char::isDigit) }, label = { Text("Âge") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                 ExposedDropdownMenuBox(expanded, { expanded = !expanded }) {
                     OutlinedTextField(position, {}, readOnly = true, label = { Text("Poste") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) }, modifier = Modifier.menuAnchor())
                     ExposedDropdownMenu(expanded, { expanded = false }) {
@@ -392,10 +413,22 @@ private fun PlayerDialog(player: Player?, guestDefault: Boolean, onDismiss: () -
                     }
                 }
                 Row { Checkbox(guest, { guest = it }); Text("Hors collectif / invité", Modifier.padding(top = 12.dp)) }
+                TextButton(onClick = { showDetails = !showDetails }) {
+                    Text(if (showDetails) "Masquer les informations détaillées" else "Ajouter des informations détaillées")
+                }
+                if (showDetails) {
+                    OutlinedTextField(email, { email = it }, label = { Text("E-mail") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
+                    OutlinedTextField(phone, { phone = it }, label = { Text("Téléphone") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(height, { height = it.filter(Char::isDigit) }, label = { Text("Taille (cm)") }, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                        OutlinedTextField(jerseyNumber, { jerseyNumber = it.filter(Char::isDigit) }, label = { Text("N° maillot") }, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                    }
+                    OutlinedTextField(notes, { notes = it }, label = { Text("Notes") }, minLines = 2, keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences))
+                }
             }
         },
         confirmButton = {
-            Button(onClick = { onSave(first, last, age.toInt(), position, guest) }, enabled = first.isNotBlank() && last.isNotBlank() && age.toIntOrNull() != null) { Text("Enregistrer") }
+            Button(onClick = { onSave(first, last, age.toInt(), position, guest, email, phone, height.toIntOrNull(), jerseyNumber.toIntOrNull(), notes) }, enabled = first.isNotBlank() && last.isNotBlank() && age.toIntOrNull() != null) { Text("Enregistrer") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } }
     )
@@ -636,7 +669,7 @@ private fun EventDialog(
         title = { Text("Nouvel événement") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(title, { title = it }, label = { Text("Nom") })
+                OutlinedTextField(title, { title = it }, label = { Text("Nom") }, keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences))
                 OutlinedTextField(dateText, { dateText = it }, label = { Text("Date obligatoire (AAAA-MM-JJ)") })
                 Text("Type")
                 Row { EventType.entries.forEach { eventType -> FilterChip(selected = type == eventType, onClick = { type = eventType }, label = { Text(eventType.label()) }); Spacer(Modifier.width(4.dp)) } }

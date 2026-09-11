@@ -7,6 +7,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -16,11 +20,16 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.volley.manager.data.*
+import com.volley.manager.domain.absenceRate
+import com.volley.manager.domain.collectiveAbsenceRate
+import com.volley.manager.domain.percentage
 import kotlinx.coroutines.launch
 import java.time.DayOfWeek
 import java.time.LocalDate
@@ -66,6 +75,7 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
     val events = db.events().observeAll()
     val attendance = db.attendance().observeAll()
     val eventGuests = db.eventGuests().observeAll()
+    val feedback = db.feedback().observeAll()
 
     fun addPlayer(first: String, last: String, age: Int, position: String, guest: Boolean) =
         viewModelScope.launch { db.players().insert(Player(firstName = first, lastName = last, age = age, position = position, isGuest = guest)) }
@@ -104,6 +114,9 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
     fun addGuest(eventId: Long, playerId: Long) = viewModelScope.launch { db.eventGuests().add(EventGuest(playerId, eventId)) }
     fun saveAttendance(playerId: Long, eventId: Long, status: AttendanceStatus) =
         viewModelScope.launch { db.attendance().save(Attendance(playerId, eventId, status)) }
+
+    fun addFeedback(category: String, title: String, details: String) =
+        viewModelScope.launch { db.feedback().insert(Feedback(category = category, title = title, details = details)) }
 }
 
 @Composable
@@ -111,20 +124,48 @@ fun VolleyApp(vm: MainViewModel) {
     var tab by remember { mutableIntStateOf(0) }
     var palette by remember { mutableStateOf(AppPalette(Color(0xFF1565C0), Color(0xFF00897B), Color(0xFF6A1B9A))) }
     var showPalette by remember { mutableStateOf(false) }
+    var showFeedback by remember { mutableStateOf(false) }
     val players by vm.players.collectAsStateWithLifecycle(emptyList())
     val events by vm.events.collectAsStateWithLifecycle(emptyList())
     val attendance by vm.attendance.collectAsStateWithLifecycle(emptyList())
     val guests by vm.eventGuests.collectAsStateWithLifecycle(emptyList())
-    MaterialTheme(colorScheme = lightColorScheme(primary = palette.primary, secondary = palette.secondary, tertiary = palette.tertiary)) {
+    val feedback by vm.feedback.collectAsStateWithLifecycle(emptyList())
+    val appColors = lightColorScheme(
+        primary = palette.tertiary,
+        onPrimary = Color.White,
+        secondary = palette.secondary,
+        onSecondary = Color.White,
+        tertiary = palette.tertiary,
+        background = palette.primary.copy(alpha = .07f),
+        onBackground = Color(0xFF17202A),
+        surface = Color.White,
+        onSurface = Color(0xFF17202A),
+        surfaceVariant = palette.primary.copy(alpha = .10f),
+        onSurfaceVariant = Color(0xFF52606D)
+    )
+    MaterialTheme(colorScheme = appColors, typography = MaterialTheme.typography.copy(
+        headlineMedium = MaterialTheme.typography.headlineMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+        titleLarge = MaterialTheme.typography.titleLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+        titleMedium = MaterialTheme.typography.titleMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+    )) {
         Scaffold(
+            containerColor = appColors.background,
             topBar = {
                 TopAppBar(
-                    title = { Text("Volley Manager", style = MaterialTheme.typography.titleLarge) },
-                    actions = { IconButton(onClick = { showPalette = true }) { Icon(Icons.Default.Palette, "Personnaliser les couleurs") } }
+                    title = {
+                        Column {
+                            Text("Volley Manager", style = MaterialTheme.typography.titleLarge)
+                            Text("Piloter le collectif", style = MaterialTheme.typography.labelMedium, color = appColors.onSurfaceVariant)
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { showFeedback = true }) { Icon(Icons.Default.Feedback, "Journal de feedback") }
+                        IconButton(onClick = { showPalette = true }) { Icon(Icons.Default.Palette, "Personnaliser les couleurs") }
+                    }
                 )
             },
             bottomBar = {
-                NavigationBar {
+                NavigationBar(containerColor = Color.White) {
                     listOf("Tableau", "Joueurs", "Calendrier").forEachIndexed { index, label ->
                         NavigationBarItem(
                             selected = tab == index,
@@ -146,8 +187,50 @@ fun VolleyApp(vm: MainViewModel) {
             if (showPalette) {
                 PaletteDialog(palette, { showPalette = false }) { palette = it; showPalette = false }
             }
+            if (showFeedback) {
+                FeedbackDialog(feedback, { showFeedback = false }) { category, title, details ->
+                    vm.addFeedback(category, title, details)
+                }
+            }
         }
+
     }
+}
+
+@Composable
+private fun FeedbackDialog(feedback: List<Feedback>, onDismiss: () -> Unit, onSave: (String, String, String) -> Unit) {
+    var category by remember { mutableStateOf("Bug") }
+    var title by remember { mutableStateOf("") }
+    var details by remember { mutableStateOf("") }
+    var showJournal by remember { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
+    val export = feedback.joinToString("\n\n") { "# ${it.category} — ${it.title}\n${it.details}" }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Journal de feedback") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Les retours sont conservés localement pour les traiter ensuite comme des Issues GitHub.")
+                Row {
+                    listOf("Bug", "Idée", "Amélioration").forEach { option ->
+                        FilterChip(category == option, { category = option }, label = { Text(option) })
+                        Spacer(Modifier.width(4.dp))
+                    }
+                }
+                OutlinedTextField(title, { title = it }, label = { Text("Titre") })
+                OutlinedTextField(details, { details = it }, label = { Text("Description") }, minLines = 3)
+                TextButton(onClick = { showJournal = !showJournal }) { Text(if (showJournal) "Masquer l'historique" else "Voir l'historique (${feedback.size})") }
+                if (showJournal) {
+                    feedback.take(5).forEach { Text("${it.category} — ${it.title}", style = MaterialTheme.typography.bodySmall) }
+                    if (feedback.isNotEmpty()) TextButton(onClick = { clipboard.setText(AnnotatedString(export)) }) { Text("Copier pour GitHub Issues") }
+                }
+            }
+        },
+        confirmButton = {
+            Button(enabled = title.isNotBlank() && details.isNotBlank(), onClick = { onSave(category, title, details); onDismiss() }) { Text("Enregistrer") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Fermer") } }
+    )
 }
 
 @Composable
@@ -194,23 +277,46 @@ private fun PaletteDialog(current: AppPalette, onDismiss: () -> Unit, onSave: (A
 private fun Dashboard(players: List<Player>, events: List<VolleyEvent>, attendance: List<Attendance>) {
     val collective = players.filterNot { it.isGuest }
     val pastSessions = events.filter { it.type == EventType.TRAINING && !it.cancelled && eventDate(it).isBefore(LocalDate.now()) }
-    val absenceCount = attendance.count { it.status == AttendanceStatus.ABSENT && it.playerId in collective.map { p -> p.id } }
-    val expected = pastSessions.size * collective.size
-    Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Vue d'ensemble", style = MaterialTheme.typography.headlineMedium)
+        Text("Les chiffres clés de votre saison", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            MetricCard("Collectif", collective.size.toString(), Modifier.weight(1f))
-            MetricCard("Invités", players.count { it.isGuest }.toString(), Modifier.weight(1f))
+            MetricCard("Collectif", collective.size.toString(), Icons.Default.Groups, Modifier.weight(1f))
+            MetricCard("Invités", players.count { it.isGuest }.toString(), Icons.Default.PersonAdd, Modifier.weight(1f))
         }
-        MetricCard("Absence collectif", "${percent(absenceCount, expected)} %", Modifier.fillMaxWidth())
-        Text("${pastSessions.size} séance(s) passée(s) depuis le début de la saison")
-        Text("Les invités ne sont jamais inclus dans ces statistiques.")
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondary.copy(alpha = .14f)),
+            shape = RoundedCornerShape(22.dp)
+        ) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Forme du collectif", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+                Text("${collectiveAbsenceRate(collective.map { it.id }, pastSessions, attendance)} %", style = MaterialTheme.typography.displaySmall, color = MaterialTheme.colorScheme.secondary)
+                Text("taux d'absence · ${pastSessions.size} séance(s) passée(s)", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        Text("Les invités ne sont jamais inclus dans ces statistiques.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
 @Composable
-private fun MetricCard(label: String, value: String, modifier: Modifier) {
-    Card(modifier) { Column(Modifier.padding(16.dp)) { Text(value, style = MaterialTheme.typography.headlineMedium); Text(label) } }
+private fun MetricCard(label: String, value: String, icon: androidx.compose.ui.graphics.vector.ImageVector, modifier: Modifier) {
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondary.copy(alpha = .14f)),
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Box(
+                Modifier.size(34.dp).background(MaterialTheme.colorScheme.tertiary.copy(alpha = .16f), CircleShape),
+                contentAlignment = androidx.compose.ui.Alignment.Center
+            ) {
+                Icon(icon, null, tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(19.dp))
+            }
+            Text(value, style = MaterialTheme.typography.headlineMedium, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+            Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
 }
 
 @Composable
@@ -244,6 +350,10 @@ private fun PlayerList(players: List<Player>, vm: MainViewModel, edit: (Player) 
     LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.heightIn(max = 220.dp)) {
         items(players) { player ->
             ListItem(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.White, RoundedCornerShape(16.dp))
+                    .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = .08f), RoundedCornerShape(16.dp)),
                 headlineContent = { Text("${player.firstName} ${player.lastName}") },
                 supportingContent = { Text("${player.position} · ${player.age} ans") },
                 trailingContent = {
@@ -320,7 +430,14 @@ private fun CalendarArea(
                     showAddForDate = date
                 }
             }, vm)
-            1 -> AttendanceView(events, players, guests, attendance, selectedDate, selectedEvent, { selectedEvent = it }, vm)
+            1 -> AttendanceView(
+                events, players, guests, attendance, selectedDate, selectedEvent,
+                { event ->
+                    selectedEvent = event
+                    if (event != null) selectedDate = eventDate(event)
+                },
+                vm
+            )
             else -> StatisticsView(events, players, attendance)
         }
     }
@@ -355,18 +472,41 @@ private fun CalendarView(events: List<VolleyEvent>, selectedDate: LocalDate, onD
             val start = selectedDate.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
             WeekRow(start, events, selectedDate, onDate)
         } else {
-            Row(Modifier.fillMaxWidth()) { weekdays.forEach { Text(it, Modifier.weight(1f), style = MaterialTheme.typography.labelSmall) } }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
+                weekdays.forEach { Text(it, Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
             val first = month.atDay(1).with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
             for (week in 0..5) {
                 Row(Modifier.fillMaxWidth()) {
                     for (dayIndex in 0..6) {
                         val day = first.plusDays((week * 7 + dayIndex).toLong())
                         val dayEvents = events.filter { !it.cancelled && eventDate(it) == day }
-                        TextButton(onClick = { onDate(day) }, modifier = Modifier.weight(1f)) {
-                            Text(
-                                if (day.month == month.month) "${day.dayOfMonth}${if (dayEvents.isNotEmpty()) " •" else ""}" else "",
-                                color = dayEvents.firstOrNull()?.let(::eventColor) ?: LocalContentColor.current
-                            )
+                        val inMonth = day.month == month.month
+                        val selected = day == selectedDate
+                        val eventTint = dayEvents.firstOrNull()?.let(::eventColor)
+                        Box(Modifier.weight(1f).padding(2.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                            TextButton(
+                                onClick = { onDate(day) },
+                                modifier = Modifier.size(42.dp),
+                                shape = CircleShape,
+                                colors = ButtonDefaults.textButtonColors(
+                                    containerColor = when {
+                                        selected -> MaterialTheme.colorScheme.tertiary
+                                        dayEvents.isNotEmpty() -> (eventTint ?: MaterialTheme.colorScheme.secondary).copy(alpha = .12f)
+                                        else -> Color.Transparent
+                                    }
+                                )
+                            ) {
+                                Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
+                                    Text(
+                                        if (inMonth) day.dayOfMonth.toString() else "",
+                                        color = if (selected) Color.White else eventTint ?: MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    if (dayEvents.isNotEmpty()) {
+                                        Box(Modifier.size(4.dp).background(if (selected) Color.White else eventTint ?: MaterialTheme.colorScheme.tertiary, CircleShape))
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -407,13 +547,33 @@ private fun AttendanceView(
     onEvent: (VolleyEvent?) -> Unit,
     vm: MainViewModel
 ) {
-    val dayEvents = events.filter { !it.cancelled && eventDate(it) == date }
+    val orderedEvents = events.filterNot { it.cancelled }.sortedBy { it.startsAt }
+    val dayEvents = orderedEvents.filter { eventDate(it) == date }
     Text("Séances du ${date.format(dateFormatter)}", style = MaterialTheme.typography.titleLarge)
     if (dayEvents.isEmpty()) Text("Aucune séance à cette date.", Modifier.padding(top = 16.dp))
     dayEvents.forEach { event ->
         OutlinedButton(onClick = { onEvent(event) }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text(event.title) }
     }
     selectedEvent?.let { event ->
+        val eventIndex = orderedEvents.indexOfFirst { it.id == event.id }
+        val previous = orderedEvents.getOrNull(eventIndex - 1)
+        val next = orderedEvents.getOrNull(eventIndex + 1)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            if (previous != null) {
+                TextButton(onClick = { onEvent(previous) }) {
+                    Icon(Icons.Default.ChevronLeft, "Événement précédent")
+                    Text("Précédent")
+                }
+            } else {
+                Spacer(Modifier.width(1.dp))
+            }
+            if (next != null) {
+                TextButton(onClick = { onEvent(next) }) {
+                    Text("Suivant")
+                    Icon(Icons.Default.ChevronRight, "Événement suivant")
+                }
+            }
+        }
         val guestIds = guests.filter { it.eventId == event.id }.map { it.playerId }.toSet()
         val roster = players.filter { !it.isGuest || it.id in guestIds }
         Text("Présences — ${event.title}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp))
@@ -441,13 +601,13 @@ private fun StatisticsView(events: List<VolleyEvent>, players: List<Player>, att
         Text("Statistiques d'absence", style = MaterialTheme.typography.titleLarge)
         Text("Saison : ${seasonStart?.format(dateFormatter) ?: "aucune séance passée"} → aujourd'hui")
         Text("Séances passées : ${sessions.size} · ce mois-ci : ${monthSessions.size}")
-        MetricCard("Absence du collectif — saison", "${collectiveAbsenceRate(collective, sessions, attendance)} %", Modifier.fillMaxWidth())
-        MetricCard("Absence du collectif — mois", "${collectiveAbsenceRate(collective, monthSessions, attendance)} %", Modifier.fillMaxWidth())
+        MetricCard("Absence du collectif — saison", "${collectiveAbsenceRate(collective.map { it.id }, sessions, attendance)} %", Icons.Default.Insights, Modifier.fillMaxWidth())
+        MetricCard("Absence du collectif — mois", "${collectiveAbsenceRate(collective.map { it.id }, monthSessions, attendance)} %", Icons.Default.CalendarMonth, Modifier.fillMaxWidth())
         Text("Suivi individuel", style = MaterialTheme.typography.titleMedium)
         LazyColumn {
-            items(collective) { player ->
-                val season = playerAbsenceRate(player.id, sessions, attendance)
-                val month = playerAbsenceRate(player.id, monthSessions, attendance)
+            items(collective.sortedByDescending { absenceRate(it.id, sessions, attendance) }) { player ->
+                val season = absenceRate(player.id, sessions, attendance)
+                val month = absenceRate(player.id, monthSessions, attendance)
                 ListItem(
                     headlineContent = { Text("${player.firstName} ${player.lastName}") },
                     supportingContent = { Text("Saison : $season % · Mois : $month %") }
@@ -501,14 +661,6 @@ private fun EventDialog(
 }
 
 private fun eventDate(event: VolleyEvent) = java.time.Instant.ofEpochMilli(event.startsAt).atZone(ZoneId.systemDefault()).toLocalDate()
-private fun percent(value: Int, total: Int) = if (total == 0) 0 else value * 100 / total
-private fun playerAbsenceRate(playerId: Long, sessions: List<VolleyEvent>, attendance: List<Attendance>) =
-    percent(sessions.count { event -> attendance.any { it.playerId == playerId && it.eventId == event.id && it.status == AttendanceStatus.ABSENT } }, sessions.size)
-private fun collectiveAbsenceRate(players: List<Player>, sessions: List<VolleyEvent>, attendance: List<Attendance>): Int {
-    val total = players.size * sessions.size
-    val absent = players.sumOf { player -> sessions.count { event -> attendance.any { it.playerId == player.id && it.eventId == event.id && it.status == AttendanceStatus.ABSENT } } }
-    return percent(absent, total)
-}
 private fun EventType.label() = when (this) {
     EventType.TRAINING -> "Séance"
     EventType.MATCH -> "Match"

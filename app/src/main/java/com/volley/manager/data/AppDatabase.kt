@@ -48,6 +48,15 @@ data class Absence(
     val reason: String
 )
 
+@Entity(tableName = "feedback")
+data class Feedback(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val category: String,
+    val title: String,
+    val details: String,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
 @Dao
 interface PlayerDao {
     @Query("SELECT * FROM players ORDER BY lastName, firstName")
@@ -87,7 +96,14 @@ interface AbsenceDao {
     fun observeAll(): Flow<List<Absence>>
 }
 
-@Database(entities = [Player::class, VolleyEvent::class, EventGuest::class, Attendance::class, Absence::class], version = 3, exportSchema = false)
+@Dao
+interface FeedbackDao {
+    @Query("SELECT * FROM feedback ORDER BY createdAt DESC")
+    fun observeAll(): Flow<List<Feedback>>
+    @Insert suspend fun insert(feedback: Feedback)
+}
+
+@Database(entities = [Player::class, VolleyEvent::class, EventGuest::class, Attendance::class, Absence::class, Feedback::class], version = 4, exportSchema = false)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun players(): PlayerDao
@@ -95,6 +111,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun eventGuests(): EventGuestDao
     abstract fun attendance(): AttendanceDao
     abstract fun absences(): AbsenceDao
+    abstract fun feedback(): FeedbackDao
 
     companion object {
         fun create(context: Context): AppDatabase = Room.databaseBuilder(

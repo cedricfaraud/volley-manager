@@ -4,6 +4,7 @@ package com.volley.manager
 
 import android.os.Bundle
 import android.content.Intent
+import android.util.Patterns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -48,6 +49,13 @@ private val positions = listOf("Libéro", "Passeur", "Pointu", "Central", "R4")
 private val weekdays = listOf("Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim")
 private val fullWeekdays = listOf("Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche")
 private val dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+
+private fun capitalizeName(value: String): String =
+    value.trim().split(Regex("\\s+")).filter(String::isNotBlank)
+        .joinToString(" ") { part -> part.lowercase(Locale.getDefault()).replaceFirstChar(Char::uppercaseChar) }
+
+private fun isValidPhone(value: String): Boolean =
+    value.isBlank() || value.matches(Regex("^\\+?[0-9][0-9 .()-]{7,}$"))
 
 private data class AppPalette(
     val primary: Color,
@@ -398,6 +406,8 @@ private fun PlayerDialog(player: Player?, guestDefault: Boolean, onDismiss: () -
     var height by remember { mutableStateOf(player?.heightCm?.toString().orEmpty()) }
     var jerseyNumber by remember { mutableStateOf(player?.jerseyNumber?.toString().orEmpty()) }
     var notes by remember { mutableStateOf(player?.notes.orEmpty()) }
+    val emailValid = email.isBlank() || Patterns.EMAIL_ADDRESS.matcher(email.trim()).matches()
+    val phoneValid = isValidPhone(phone.trim())
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (player == null) "Nouveau joueur" else "Modifier le joueur") },
@@ -417,8 +427,8 @@ private fun PlayerDialog(player: Player?, guestDefault: Boolean, onDismiss: () -
                     Text(if (showDetails) "Masquer les informations détaillées" else "Ajouter des informations détaillées")
                 }
                 if (showDetails) {
-                    OutlinedTextField(email, { email = it }, label = { Text("E-mail") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
-                    OutlinedTextField(phone, { phone = it }, label = { Text("Téléphone") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone))
+                    OutlinedTextField(email, { email = it }, label = { Text("E-mail") }, isError = !emailValid, supportingText = { if (!emailValid) Text("Format d'e-mail invalide") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
+                    OutlinedTextField(phone, { phone = it }, label = { Text("Téléphone") }, isError = !phoneValid, supportingText = { if (!phoneValid) Text("Format de téléphone invalide") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(height, { height = it.filter(Char::isDigit) }, label = { Text("Taille (cm)") }, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                         OutlinedTextField(jerseyNumber, { jerseyNumber = it.filter(Char::isDigit) }, label = { Text("N° maillot") }, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
@@ -428,7 +438,9 @@ private fun PlayerDialog(player: Player?, guestDefault: Boolean, onDismiss: () -
             }
         },
         confirmButton = {
-            Button(onClick = { onSave(first, last, age.toInt(), position, guest, email, phone, height.toIntOrNull(), jerseyNumber.toIntOrNull(), notes) }, enabled = first.isNotBlank() && last.isNotBlank() && age.toIntOrNull() != null) { Text("Enregistrer") }
+            Button(onClick = {
+                onSave(capitalizeName(first), capitalizeName(last), age.toInt(), position, guest, email.trim(), phone.trim(), height.toIntOrNull(), jerseyNumber.toIntOrNull(), notes.trim())
+            }, enabled = first.isNotBlank() && last.isNotBlank() && age.toIntOrNull() != null && emailValid && phoneValid) { Text("Enregistrer") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } }
     )

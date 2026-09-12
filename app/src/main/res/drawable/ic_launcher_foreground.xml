@@ -8,23 +8,29 @@
         android:pathData="M54,18A36,36 0,1 0,54 90A36,36 0,1 0,54 18" />
     <path
         android:fillColor="@android:color/transparent"
-        android:pathData="M18,54C32,52 44,42 49,27"
+        android:pathData="M27,35C38,43 48,47 59,46C68,45 76,41 82,35"
+        android:strokeColor="@color/volley_navy"
+        android:strokeLineCap="round"
+        android:strokeWidth="5" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M31,24C39,35 44,46 44,57C44,68 40,78 34,85"
         android:strokeColor="@android:color/white"
         android:strokeLineCap="round"
         android:strokeWidth="4" />
     <path
         android:fillColor="@android:color/transparent"
-        android:pathData="M49,27C65,32 76,43 82,58"
+        android:pathData="M77,24C69,35 64,46 64,57C64,68 68,78 74,85"
         android:strokeColor="@android:color/white"
         android:strokeLineCap="round"
         android:strokeWidth="4" />
     <path
         android:fillColor="@android:color/transparent"
-        android:pathData="M30,81C42,69 58,64 77,68"
+        android:pathData="M31,75C42,70 54,68 66,70C72,71 77,73 81,76"
         android:strokeColor="@android:color/white"
         android:strokeLineCap="round"
-        android:strokeWidth="4" />
+        android:strokeWidth="5" />
     <path
         android:fillColor="@color/volley_yellow"
-        android:pathData="M79,24L83,30L90,31L85,36L86,43L79,40L73,43L74,36L69,31L76,30Z" />
+        android:pathData="M78,23A5,5 0,1 0,78 33A5,5 0,1 0,78 23" />
 </vector>

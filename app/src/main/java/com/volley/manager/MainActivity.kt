@@ -20,8 +20,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -51,6 +54,12 @@ private val positions = listOf("Libéro", "Passeur", "Pointu", "Central", "R4")
 private val weekdays = listOf("Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim")
 private val fullWeekdays = listOf("Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche")
 private val dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+
+private fun defaultRecurrenceEnd(date: LocalDate): LocalDate {
+    var result = LocalDate.of(date.year + 1, 6, 30)
+    while (result.dayOfWeek != date.dayOfWeek) result = result.minusDays(1)
+    return result
+}
 
 private fun capitalizeName(value: String): String =
     value.trim().split(Regex("\\s+")).filter(String::isNotBlank)
@@ -358,15 +367,19 @@ private fun PlayersScreen(players: List<Player>, vm: MainViewModel) {
     var editing by remember { mutableStateOf<Player?>(null) }
     var ratingPlayer by remember { mutableStateOf<Player?>(null) }
     var creating by remember { mutableStateOf(false) }
-    Column(Modifier.padding(16.dp)) {
+    Column(Modifier.padding(16.dp).fillMaxSize()) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Joueurs", style = MaterialTheme.typography.headlineSmall)
             Button(onClick = { creating = true }) { Icon(Icons.Default.PersonAdd, null); Spacer(Modifier.width(6.dp)); Text("Ajouter") }
         }
-        Text("Collectif", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
-        PlayerList(players.filterNot { it.isGuest }, vm, { editing = it }, { ratingPlayer = it })
-        Text("Invités disponibles", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
-        PlayerList(players.filter { it.isGuest }, vm, { editing = it }, { ratingPlayer = it })
+        Column(Modifier.weight(0.7f).fillMaxWidth().padding(top = 12.dp)) {
+            Text("Collectif", style = MaterialTheme.typography.titleMedium)
+            PlayerList(players.filterNot { it.isGuest }, vm, { editing = it }, { ratingPlayer = it }, Modifier.weight(1f))
+        }
+        Column(Modifier.weight(0.3f).fillMaxWidth().padding(top = 12.dp)) {
+            Text("Invités disponibles", style = MaterialTheme.typography.titleMedium)
+            PlayerList(players.filter { it.isGuest }, vm, { editing = it }, { ratingPlayer = it }, Modifier.weight(1f))
+        }
     }
     if (creating) PlayerDialog(null, false, { creating = false }) { first, last, age, position, guest, email, phone, heightCm, jerseyNumber, notes ->
         vm.addPlayer(first, last, age, position, guest, email, phone, heightCm, jerseyNumber, notes)
@@ -387,14 +400,15 @@ private fun PlayersScreen(players: List<Player>, vm: MainViewModel) {
 }
 
 @Composable
-private fun PlayerList(players: List<Player>, vm: MainViewModel, edit: (Player) -> Unit, rate: (Player) -> Unit) {
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.heightIn(max = 220.dp)) {
+private fun PlayerList(players: List<Player>, vm: MainViewModel, edit: (Player) -> Unit, rate: (Player) -> Unit, modifier: Modifier = Modifier) {
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = modifier.fillMaxWidth()) {
         items(players) { player ->
             ListItem(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable { rate(player) }
-                    .background(Color.White, RoundedCornerShape(16.dp))
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color.White)
                     .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = .08f), RoundedCornerShape(16.dp)),
                 headlineContent = { Text("${player.firstName} ${player.lastName}") },
                 supportingContent = { Text("${player.position} · ${player.age} ans") },
@@ -685,10 +699,11 @@ private fun AttendanceView(
 ) {
     val orderedEvents = events.filterNot { it.cancelled }.sortedBy { it.startsAt }
     val dayEvents = orderedEvents.filter { eventDate(it) == date }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
     Text("Séances du ${date.format(dateFormatter)}", style = MaterialTheme.typography.titleLarge)
     if (dayEvents.isEmpty()) Text("Aucune séance à cette date.", Modifier.padding(top = 16.dp))
     dayEvents.forEach { event ->
-        OutlinedButton(onClick = { onEvent(event) }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text(event.title) }
+        OutlinedButton(onClick = { onEvent(event) }, modifier = Modifier.fillMaxWidth()) { Text(event.title) }
     }
     selectedEvent?.let { event ->
         val eventIndex = orderedEvents.indexOfFirst { it.id == event.id }
@@ -713,16 +728,67 @@ private fun AttendanceView(
         val guestIds = guests.filter { it.eventId == event.id }.map { it.playerId }.toSet()
         val roster = players.filter { !it.isGuest || it.id in guestIds }
         Text("Présences — ${event.title}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp))
+        var showGuestPicker by remember(event.id) { mutableStateOf(false) }
+        OutlinedButton(onClick = { showGuestPicker = true }, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Default.PersonAdd, null)
+            Spacer(Modifier.width(6.dp))
+            Text("Ajouter un invité")
+        }
         roster.forEach { player ->
             val current = attendance.firstOrNull { it.playerId == player.id && it.eventId == event.id }?.status ?: if (player.isGuest) AttendanceStatus.ABSENT else AttendanceStatus.PRESENT
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("${player.firstName} ${player.lastName}", Modifier.padding(top = 12.dp))
                 AssistChip(
-                    onClick = { vm.saveAttendance(player.id, event.id, if (current == AttendanceStatus.PRESENT) AttendanceStatus.ABSENT else AttendanceStatus.PRESENT) },
-                    label = { Text(if (current == AttendanceStatus.PRESENT) "Présent" else "Absent") }
+                    onClick = {
+                        val next = when (current) {
+                            AttendanceStatus.PRESENT -> AttendanceStatus.ABSENT
+                            AttendanceStatus.ABSENT -> AttendanceStatus.EXCUSED
+                            else -> AttendanceStatus.PRESENT
+                        }
+                        vm.saveAttendance(player.id, event.id, next)
+                    },
+                    colors = AssistChipDefaults.assistChipColors(
+                        containerColor = when (current) {
+                            AttendanceStatus.PRESENT -> Color(0xFFDDF5E3)
+                            AttendanceStatus.EXCUSED -> Color(0xFFFFE8C2)
+                            else -> Color(0xFFFFDAD6)
+                        },
+                        labelColor = when (current) {
+                            AttendanceStatus.PRESENT -> Color(0xFF176B32)
+                            AttendanceStatus.EXCUSED -> Color(0xFF8A4B00)
+                            else -> Color(0xFFB3261E)
+                        }
+                    ),
+                    label = {
+                        Text(
+                            when (current) {
+                                AttendanceStatus.PRESENT -> "Présent"
+                                AttendanceStatus.EXCUSED -> "Absent justifié"
+                                else -> "Absent"
+                            }
+                        )
+                    }
                 )
             }
         }
+        if (showGuestPicker) {
+            AlertDialog(
+                onDismissRequest = { showGuestPicker = false },
+                title = { Text("Ajouter un invité") },
+                text = {
+                    Column {
+                        players.filter { it.isGuest && it.id !in guestIds }.forEach { guest ->
+                            TextButton(
+                                onClick = { vm.addGuest(event.id, guest.id); showGuestPicker = false },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("${guest.firstName} ${guest.lastName}") }
+                        }
+                    }
+                },
+                confirmButton = { TextButton(onClick = { showGuestPicker = false }) { Text("Fermer") } }
+            )
+        }
+    }
     }
 }
 
@@ -764,7 +830,7 @@ private fun EventDialog(
     var dateText by remember { mutableStateOf(initialDate.format(dateFormatter)) }
     var type by remember { mutableStateOf(EventType.TRAINING) }
     var recurring by remember { mutableStateOf(false) }
-    var endDate by remember { mutableStateOf<LocalDate?>(null) }
+    var endDate by remember { mutableStateOf<LocalDate?>(defaultRecurrenceEnd(initialDate)) }
     var showEndDatePicker by remember { mutableStateOf(false) }
     val date = runCatching { LocalDate.parse(dateText, dateFormatter) }.getOrNull()
     AlertDialog(
@@ -784,7 +850,7 @@ private fun EventDialog(
                     )
                     Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                         Checkbox(endDate != null, { checked ->
-                            endDate = if (checked) (date ?: initialDate).plusMonths(1) else null
+                            endDate = if (checked) defaultRecurrenceEnd(date ?: initialDate) else null
                         })
                         Text("Définir une date de fin (facultatif)")
                     }

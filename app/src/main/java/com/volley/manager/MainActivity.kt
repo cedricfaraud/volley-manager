@@ -430,16 +430,36 @@ private fun weightedRating(position: String, ratings: List<Int>): Double {
 private fun RatingsDialog(player: Player, onDismiss: () -> Unit, onSave: (List<Int>) -> Unit) {
     val initial = listOf(player.serviceRating, player.receptionRating, player.settingRating, player.attackRating, player.blockRating, player.defenseRating, player.motivationRating, player.techniqueRating)
     var ratings by remember { mutableStateOf(initial) }
+    val otherPositions = positions.filter { it != player.position }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Évaluation de ${player.firstName} ${player.lastName}") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    "Qualité ${"%.1f".format(Locale.getDefault(), weightedRating(player.position, ratings))}/20",
+                    "${player.position} · ${"%.1f".format(Locale.getDefault(), weightedRating(player.position, ratings))}/20",
                     style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.primary
                 )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    otherPositions.forEach { position ->
+                        Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
+                            Box(
+                                Modifier
+                                    .size(54.dp)
+                                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = .16f), CircleShape),
+                                contentAlignment = androidx.compose.ui.Alignment.Center
+                            ) {
+                                Text(
+                                    "%.1f".format(Locale.getDefault(), weightedRating(position, ratings)),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.secondary
+                                )
+                            }
+                            Text(position, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
                 ratingLabels.forEachIndexed { index, label ->
                     Column {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {

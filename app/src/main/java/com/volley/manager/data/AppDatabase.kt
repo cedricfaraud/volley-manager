@@ -2,6 +2,8 @@ package com.volley.manager.data
 
 import android.content.Context
 import androidx.room.*
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 enum class EventType { TRAINING, MATCH, EXCEPTIONAL }
@@ -116,6 +118,29 @@ interface FeedbackDao {
     @Insert suspend fun insert(feedback: Feedback)
 }
 
+private val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE players ADD COLUMN email TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE players ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE players ADD COLUMN heightCm INTEGER")
+        db.execSQL("ALTER TABLE players ADD COLUMN jerseyNumber INTEGER")
+        db.execSQL("ALTER TABLE players ADD COLUMN notes TEXT NOT NULL DEFAULT ''")
+    }
+}
+
+private val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE players ADD COLUMN serviceRating INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE players ADD COLUMN receptionRating INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE players ADD COLUMN settingRating INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE players ADD COLUMN attackRating INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE players ADD COLUMN blockRating INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE players ADD COLUMN defenseRating INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE players ADD COLUMN motivationRating INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE players ADD COLUMN techniqueRating INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
 @Database(entities = [Player::class, VolleyEvent::class, EventGuest::class, Attendance::class, Absence::class, Feedback::class], version = 6, exportSchema = false)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
@@ -129,7 +154,7 @@ abstract class AppDatabase : RoomDatabase() {
     companion object {
         fun create(context: Context): AppDatabase = Room.databaseBuilder(
             context, AppDatabase::class.java, "volley-manager.db"
-        ).fallbackToDestructiveMigration().build()
+        ).addMigrations(MIGRATION_4_5, MIGRATION_5_6).build()
     }
 }
 

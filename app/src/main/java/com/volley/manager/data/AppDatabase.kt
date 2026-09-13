@@ -19,7 +19,15 @@ data class Player(
     val phone: String = "",
     val heightCm: Int? = null,
     val jerseyNumber: Int? = null,
-    val notes: String = ""
+    val notes: String = "",
+    val serviceRating: Int = 0,
+    val receptionRating: Int = 0,
+    val settingRating: Int = 0,
+    val attackRating: Int = 0,
+    val blockRating: Int = 0,
+    val defenseRating: Int = 0,
+    val motivationRating: Int = 0,
+    val techniqueRating: Int = 0
 )
 
 @Entity(tableName = "events")
@@ -108,7 +116,7 @@ interface FeedbackDao {
     @Insert suspend fun insert(feedback: Feedback)
 }
 
-@Database(entities = [Player::class, VolleyEvent::class, EventGuest::class, Attendance::class, Absence::class, Feedback::class], version = 5, exportSchema = false)
+@Database(entities = [Player::class, VolleyEvent::class, EventGuest::class, Attendance::class, Absence::class, Feedback::class], version = 6, exportSchema = false)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun players(): PlayerDao

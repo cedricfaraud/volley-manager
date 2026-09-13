@@ -11,6 +11,7 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
@@ -44,6 +45,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.TemporalAdjusters
 import java.util.Locale
+import kotlin.math.roundToInt
 
 private val positions = listOf("Libéro", "Passeur", "Pointu", "Central", "R4")
 private val weekdays = listOf("Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim")
@@ -95,6 +97,15 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
 
     fun updatePlayer(player: Player, first: String, last: String, age: Int, position: String, email: String, phone: String, heightCm: Int?, jerseyNumber: Int?, notes: String) =
         viewModelScope.launch { db.players().update(player.copy(firstName = first, lastName = last, age = age, position = position, email = email, phone = phone, heightCm = heightCm, jerseyNumber = jerseyNumber, notes = notes)) }
+
+    fun updateRatings(player: Player, ratings: List<Int>) =
+        viewModelScope.launch {
+            db.players().update(player.copy(
+                serviceRating = ratings[0], receptionRating = ratings[1], settingRating = ratings[2],
+                attackRating = ratings[3], blockRating = ratings[4], defenseRating = ratings[5],
+                motivationRating = ratings[6], techniqueRating = ratings[7]
+            ))
+        }
 
     fun setCollective(player: Player, inCollective: Boolean) =
         viewModelScope.launch { db.players().update(player.copy(isGuest = !inCollective)) }
@@ -345,6 +356,7 @@ private fun MetricCard(label: String, value: String, icon: androidx.compose.ui.g
 @Composable
 private fun PlayersScreen(players: List<Player>, vm: MainViewModel) {
     var editing by remember { mutableStateOf<Player?>(null) }
+    var ratingPlayer by remember { mutableStateOf<Player?>(null) }
     var creating by remember { mutableStateOf(false) }
     Column(Modifier.padding(16.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -352,9 +364,9 @@ private fun PlayersScreen(players: List<Player>, vm: MainViewModel) {
             Button(onClick = { creating = true }) { Icon(Icons.Default.PersonAdd, null); Spacer(Modifier.width(6.dp)); Text("Ajouter") }
         }
         Text("Collectif", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
-        PlayerList(players.filterNot { it.isGuest }, vm) { editing = it }
+        PlayerList(players.filterNot { it.isGuest }, vm, { editing = it }, { ratingPlayer = it })
         Text("Invités disponibles", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
-        PlayerList(players.filter { it.isGuest }, vm) { editing = it }
+        PlayerList(players.filter { it.isGuest }, vm, { editing = it }, { ratingPlayer = it })
     }
     if (creating) PlayerDialog(null, false, { creating = false }) { first, last, age, position, guest, email, phone, heightCm, jerseyNumber, notes ->
         vm.addPlayer(first, last, age, position, guest, email, phone, heightCm, jerseyNumber, notes)
@@ -366,15 +378,22 @@ private fun PlayersScreen(players: List<Player>, vm: MainViewModel) {
             editing = null
         }
     }
+    ratingPlayer?.let { player ->
+        RatingsDialog(player, { ratingPlayer = null }) { ratings ->
+            vm.updateRatings(player, ratings)
+            ratingPlayer = null
+        }
+    }
 }
 
 @Composable
-private fun PlayerList(players: List<Player>, vm: MainViewModel, edit: (Player) -> Unit) {
+private fun PlayerList(players: List<Player>, vm: MainViewModel, edit: (Player) -> Unit, rate: (Player) -> Unit) {
     LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.heightIn(max = 220.dp)) {
         items(players) { player ->
             ListItem(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clickable { rate(player) }
                     .background(Color.White, RoundedCornerShape(16.dp))
                     .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = .08f), RoundedCornerShape(16.dp)),
                 headlineContent = { Text("${player.firstName} ${player.lastName}") },
@@ -390,6 +409,58 @@ private fun PlayerList(players: List<Player>, vm: MainViewModel, edit: (Player) 
             )
         }
     }
+}
+
+private val ratingLabels = listOf("Service", "Réception", "Passe", "Attaque", "Bloc", "Défense", "Envie", "Technique")
+
+private fun weightedRating(position: String, ratings: List<Int>): Double {
+    val coefficients = when (position) {
+        "Passeur" -> listOf(4, 0, 10, 0, 2, 1, 1, 1)
+        "R4" -> listOf(4, 10, 0, 8, 1, 4, 1, 1)
+        "Central" -> listOf(4, 0, 0, 6, 10, 0, 1, 0)
+        "Pointu" -> listOf(4, 0, 0, 10, 4, 3, 1, 1)
+        "Libéro" -> listOf(0, 10, 1, 0, 0, 10, 2, 1)
+        else -> List(8) { 1 }
+    }
+    val total = coefficients.sum()
+    return if (total == 0) 0.0 else ratings.zip(coefficients).sumOf { (rating, coefficient) -> rating * coefficient }.toDouble() / total
+}
+
+@Composable
+private fun RatingsDialog(player: Player, onDismiss: () -> Unit, onSave: (List<Int>) -> Unit) {
+    val initial = listOf(player.serviceRating, player.receptionRating, player.settingRating, player.attackRating, player.blockRating, player.defenseRating, player.motivationRating, player.techniqueRating)
+    var ratings by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Évaluation de ${player.firstName} ${player.lastName}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    "Qualité ${"%.1f".format(Locale.getDefault(), weightedRating(player.position, ratings))}/20",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                ratingLabels.forEachIndexed { index, label ->
+                    Column {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(label)
+                            Text("${ratings[index]}/20", color = MaterialTheme.colorScheme.primary)
+                        }
+                        Slider(
+                            value = ratings[index].toFloat(),
+                            onValueChange = { value ->
+                                ratings = ratings.toMutableList().also { it[index] = value.roundToInt().coerceIn(0, 20) }
+                            },
+                            valueRange = 0f..20f,
+                            steps = 19
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = { Button(onClick = { onSave(ratings) }) { Text("Enregistrer") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } }
+    )
 }
 
 @Composable

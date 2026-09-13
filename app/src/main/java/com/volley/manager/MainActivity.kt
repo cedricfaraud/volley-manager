@@ -38,6 +38,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.volley.manager.data.*
 import com.volley.manager.domain.absenceRate
+import com.volley.manager.domain.absenceBreakdown
+import com.volley.manager.domain.collectiveAbsenceBreakdown
 import com.volley.manager.domain.collectiveAbsenceRate
 import com.volley.manager.domain.percentage
 import kotlinx.coroutines.launch
@@ -702,8 +704,10 @@ private fun AttendanceView(
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
     Text("Séances du ${date.format(dateFormatter)}", style = MaterialTheme.typography.titleLarge)
     if (dayEvents.isEmpty()) Text("Aucune séance à cette date.", Modifier.padding(top = 16.dp))
-    dayEvents.forEach { event ->
-        OutlinedButton(onClick = { onEvent(event) }, modifier = Modifier.fillMaxWidth()) { Text(event.title) }
+    if (selectedEvent == null) {
+        dayEvents.forEach { event ->
+            TextButton(onClick = { onEvent(event) }, modifier = Modifier.fillMaxWidth()) { Text(event.title) }
+        }
     }
     selectedEvent?.let { event ->
         val eventIndex = orderedEvents.indexOfFirst { it.id == event.id }
@@ -803,16 +807,23 @@ private fun StatisticsView(events: List<VolleyEvent>, players: List<Player>, att
         Text("Statistiques d'absence", style = MaterialTheme.typography.titleLarge)
         Text("Saison : ${seasonStart?.format(dateFormatter) ?: "aucune séance passée"} → aujourd'hui")
         Text("Séances passées : ${sessions.size} · ce mois-ci : ${monthSessions.size}")
-        MetricCard("Absence du collectif — saison", "${collectiveAbsenceRate(collective.map { it.id }, sessions, attendance)} %", Icons.Default.Insights, Modifier.fillMaxWidth())
-        MetricCard("Absence du collectif — mois", "${collectiveAbsenceRate(collective.map { it.id }, monthSessions, attendance)} %", Icons.Default.CalendarMonth, Modifier.fillMaxWidth())
+        val collectiveSeason = collectiveAbsenceBreakdown(collective.map { it.id }, sessions, attendance)
+        val collectiveMonth = collectiveAbsenceBreakdown(collective.map { it.id }, monthSessions, attendance)
+        MetricCard("Absence du collectif — saison", "${collectiveSeason.totalRate} % dont ${collectiveSeason.justifiedRate} % justifiées", Icons.Default.Insights, Modifier.fillMaxWidth())
+        MetricCard("Absence du collectif — mois", "${collectiveMonth.totalRate} % dont ${collectiveMonth.justifiedRate} % justifiées", Icons.Default.CalendarMonth, Modifier.fillMaxWidth())
         Text("Suivi individuel", style = MaterialTheme.typography.titleMedium)
         LazyColumn {
             items(collective.sortedByDescending { absenceRate(it.id, sessions, attendance) }) { player ->
-                val season = absenceRate(player.id, sessions, attendance)
-                val month = absenceRate(player.id, monthSessions, attendance)
+                val season = absenceBreakdown(player.id, sessions, attendance)
+                val month = absenceBreakdown(player.id, monthSessions, attendance)
                 ListItem(
                     headlineContent = { Text("${player.firstName} ${player.lastName}") },
-                    supportingContent = { Text("Saison : $season % · Mois : $month %") }
+                    supportingContent = {
+                        Text(
+                            "Mois : ${month.totalRate} % dont ${month.justifiedRate} % justifiées · " +
+                                "Année : ${season.totalRate} % dont ${season.justifiedRate} % justifiées"
+                        )
+                    }
                 )
             }
         }

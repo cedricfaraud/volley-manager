@@ -20,6 +20,12 @@ class AttendanceRulesTest {
     }
 
     @Test
+    fun `justified absence is included and reported separately`() {
+        val attendance = listOf(Attendance(10, 1, AttendanceStatus.EXCUSED))
+        assertEquals(AbsenceBreakdown(50, 50), absenceBreakdown(10, sessions, attendance))
+    }
+
+    @Test
     fun `collective rate ignores players outside the collective`() {
         val attendance = listOf(
             Attendance(10, 1, AttendanceStatus.ABSENT),

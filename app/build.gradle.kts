@@ -7,6 +7,13 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+val releaseSigningReady = listOf(
+    "VOLLEY_KEYSTORE_PATH",
+    "VOLLEY_KEYSTORE_PASSWORD",
+    "VOLLEY_KEY_ALIAS",
+    "VOLLEY_KEY_PASSWORD"
+).all { !System.getenv(it).isNullOrBlank() }
+
 android {
     namespace = "com.volley.manager"
     compileSdk = 35
@@ -21,6 +28,24 @@ android {
         versionCode = providers.gradleProperty("versionCode").orElse("1").get().toInt()
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+    signingConfigs {
+        if (releaseSigningReady) {
+            create("release") {
+                storeFile = file(System.getenv("VOLLEY_KEYSTORE_PATH")!!)
+                storePassword = System.getenv("VOLLEY_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("VOLLEY_KEY_ALIAS")
+                keyPassword = System.getenv("VOLLEY_KEY_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            if (releaseSigningReady) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
     }
     buildFeatures { compose = true }
     kotlinOptions {

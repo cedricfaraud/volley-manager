@@ -10,6 +10,12 @@ Chaque commit validé sur `main` génère automatiquement une APK. Le lien ci-de
 
 Si le lien n'est pas encore disponible, attendre la fin du [build Android GitHub Actions](https://github.com/cedricfaraud/volley-manager/actions/workflows/android.yml), puis actualiser la page.
 
+Les APK publiées depuis `main` sont signées avec une clé Android persistante afin de permettre
+les mises à jour sans désinstaller l'application. Le dépôt doit donc définir les secrets GitHub
+`VOLLEY_KEYSTORE_B64`, `VOLLEY_KEYSTORE_PASSWORD`, `VOLLEY_KEY_ALIAS` et
+`VOLLEY_KEY_PASSWORD`. La clé privée ne doit jamais être commitée. La transition depuis une
+ancienne APK signée par une clé CI temporaire peut nécessiter une désinstallation unique.
+
 ## Choix techniques
 
 - Kotlin et Jetpack Compose pour une interface Android moderne.

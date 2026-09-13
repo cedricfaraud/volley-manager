@@ -30,15 +30,42 @@ jobs:
       - name: Build debug APK
         run: gradle :app:testDebugUnitTest :app:assembleDebug --no-daemon -PversionCode=${{ github.run_number }}
       - name: Upload debug APK
+        if: github.event_name != 'push' || github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
           name: volley-manager-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
-      - name: Prepare stable APK
+      - name: Validate release signing secrets
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: cp app/build/outputs/apk/debug/app-debug.apk volley-manager-latest.apk
+        env:
+          VOLLEY_KEYSTORE_B64: ${{ secrets.VOLLEY_KEYSTORE_B64 }}
+          VOLLEY_KEYSTORE_PASSWORD: ${{ secrets.VOLLEY_KEYSTORE_PASSWORD }}
+          VOLLEY_KEY_ALIAS: ${{ secrets.VOLLEY_KEY_ALIAS }}
+          VOLLEY_KEY_PASSWORD: ${{ secrets.VOLLEY_KEY_PASSWORD }}
+        run: |
+          test -n "$VOLLEY_KEYSTORE_B64" || (echo "::error::Missing VOLLEY_KEYSTORE_B64 repository secret" && exit 1)
+          test -n "$VOLLEY_KEYSTORE_PASSWORD" || (echo "::error::Missing VOLLEY_KEYSTORE_PASSWORD repository secret" && exit 1)
+          test -n "$VOLLEY_KEY_ALIAS" || (echo "::error::Missing VOLLEY_KEY_ALIAS repository secret" && exit 1)
+          test -n "$VOLLEY_KEY_PASSWORD" || (echo "::error::Missing VOLLEY_KEY_PASSWORD repository secret" && exit 1)
+      - name: Prepare release keystore
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          VOLLEY_KEYSTORE_B64: ${{ secrets.VOLLEY_KEYSTORE_B64 }}
+        run: |
+          printf '%s' "$VOLLEY_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/volley-manager-release.jks"
+      - name: Build signed release APK
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          VOLLEY_KEYSTORE_PATH: ${{ runner.temp }}/volley-manager-release.jks
+          VOLLEY_KEYSTORE_PASSWORD: ${{ secrets.VOLLEY_KEYSTORE_PASSWORD }}
+          VOLLEY_KEY_ALIAS: ${{ secrets.VOLLEY_KEY_ALIAS }}
+          VOLLEY_KEY_PASSWORD: ${{ secrets.VOLLEY_KEY_PASSWORD }}
+        run: gradle :app:assembleRelease --no-daemon -PversionCode=${{ github.run_number }}
+      - name: Prepare stable signed APK
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: cp app/build/outputs/apk/release/app-release.apk volley-manager-latest.apk
       - name: Publish latest APK release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
@@ -47,6 +74,6 @@ jobs:
           if gh release view latest >/dev/null 2>&1; then
             gh release edit latest --target "$GITHUB_SHA" --title "Volley Manager - dernière version"
           else
-            gh release create latest --target "$GITHUB_SHA" --title "Volley Manager - dernière version" --notes "APK debug générée automatiquement depuis main."
+            gh release create latest --target "$GITHUB_SHA" --title "Volley Manager - dernière version" --notes "APK release signée générée automatiquement depuis main."
           fi
           gh release upload latest volley-manager-latest.apk --clobber

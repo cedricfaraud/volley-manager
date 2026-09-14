@@ -77,8 +77,10 @@ interface PlayerDao {
     @Query("SELECT * FROM players ORDER BY lastName, firstName")
     fun observeAll(): Flow<List<Player>>
     @Insert suspend fun insert(player: Player): Long
+    @Insert suspend fun insertAll(players: List<Player>)
     @Update suspend fun update(player: Player)
     @Delete suspend fun delete(player: Player)
+    @Query("DELETE FROM players") suspend fun deleteAll()
 }
 
 @Dao
@@ -86,7 +88,9 @@ interface EventDao {
     @Query("SELECT * FROM events ORDER BY startsAt")
     fun observeAll(): Flow<List<VolleyEvent>>
     @Insert suspend fun insert(event: VolleyEvent)
+    @Insert suspend fun insertAll(events: List<VolleyEvent>)
     @Update suspend fun update(event: VolleyEvent)
+    @Query("DELETE FROM events") suspend fun deleteAll()
 }
 
 @Dao
@@ -94,7 +98,9 @@ interface EventGuestDao {
     @Query("SELECT * FROM event_guests")
     fun observeAll(): Flow<List<EventGuest>>
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun add(guest: EventGuest)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertAll(guests: List<EventGuest>)
     @Delete suspend fun remove(guest: EventGuest)
+    @Query("DELETE FROM event_guests") suspend fun deleteAll()
 }
 
 @Dao
@@ -102,13 +108,17 @@ interface AttendanceDao {
     @Query("SELECT * FROM attendance")
     fun observeAll(): Flow<List<Attendance>>
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun save(attendance: Attendance)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertAll(attendance: List<Attendance>)
+    @Query("DELETE FROM attendance") suspend fun deleteAll()
 }
 
 @Dao
 interface AbsenceDao {
     @Insert suspend fun insert(absence: Absence)
+    @Insert suspend fun insertAll(absences: List<Absence>)
     @Query("SELECT * FROM absences")
     fun observeAll(): Flow<List<Absence>>
+    @Query("DELETE FROM absences") suspend fun deleteAll()
 }
 
 @Dao
@@ -116,6 +126,8 @@ interface FeedbackDao {
     @Query("SELECT * FROM feedback ORDER BY createdAt DESC")
     fun observeAll(): Flow<List<Feedback>>
     @Insert suspend fun insert(feedback: Feedback)
+    @Insert suspend fun insertAll(feedback: List<Feedback>)
+    @Query("DELETE FROM feedback") suspend fun deleteAll()
 }
 
 private val MIGRATION_4_5 = object : Migration(4, 5) {

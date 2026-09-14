@@ -16,6 +16,10 @@ les mises à jour sans désinstaller l'application. Le dépôt doit donc défini
 `VOLLEY_KEY_PASSWORD`. La clé privée ne doit jamais être commitée. La transition depuis une
 ancienne APK signée par une clé CI temporaire peut nécessiter une désinstallation unique.
 
+L'application propose aussi une sauvegarde JSON via les boutons exporter/importer dans la barre
+supérieure. Exporter la sauvegarde avant une désinstallation permet de restaurer joueurs, séances,
+présences, invités, absences et évaluations après réinstallation.
+
 ## Choix techniques
 
 - Kotlin et Jetpack Compose pour une interface Android moderne.

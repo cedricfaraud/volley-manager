@@ -4,9 +4,13 @@ package com.volley.manager
 
 import android.os.Bundle
 import android.content.Intent
+import android.net.Uri
 import android.util.Patterns
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.background
@@ -38,6 +42,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
 import com.volley.manager.data.*
 import com.volley.manager.domain.absenceRate
 import com.volley.manager.domain.absenceBreakdown
@@ -45,6 +50,8 @@ import com.volley.manager.domain.collectiveAbsenceBreakdown
 import com.volley.manager.domain.collectiveAbsenceRate
 import com.volley.manager.domain.percentage
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.YearMonth
@@ -83,6 +90,21 @@ private val paletteOptions = listOf(
     Color(0xFFEF6C00), Color(0xFFC62828), Color(0xFF37474F)
 )
 
+private fun JSONObject.putNullable(name: String, value: Any?) {
+    put(name, value ?: JSONObject.NULL)
+}
+
+private fun JSONObject.array(name: String): List<JSONObject> {
+    val array = getJSONArray(name)
+    return (0 until array.length()).map { array.getJSONObject(it) }
+}
+
+private fun JSONObject.optNullableInt(name: String): Int? =
+    if (isNull(name)) null else getInt(name)
+
+private fun JSONObject.optNullableLong(name: String): Long? =
+    if (isNull(name)) null else getLong(name)
+
 class MainActivity : ComponentActivity() {
     private val vm by viewModels<MainViewModel> {
         object : ViewModelProvider.Factory {
@@ -103,6 +125,7 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
     val events = db.events().observeAll()
     val attendance = db.attendance().observeAll()
     val eventGuests = db.eventGuests().observeAll()
+    val absences = db.absences().observeAll()
     val feedback = db.feedback().observeAll()
 
     fun addPlayer(first: String, last: String, age: Int, position: String, guest: Boolean, email: String, phone: String, heightCm: Int?, jerseyNumber: Int?, notes: String, onCreated: (Long) -> Unit = {}) =
@@ -177,6 +200,68 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
 
     fun addFeedback(category: String, title: String, details: String) =
         viewModelScope.launch { db.feedback().insert(Feedback(category = category, title = title, details = details)) }
+
+    fun exportBackup(uri: Uri, resolver: android.content.ContentResolver, playersSnapshot: List<Player>, eventsSnapshot: List<VolleyEvent>, guestsSnapshot: List<EventGuest>, attendanceSnapshot: List<Attendance>, absencesSnapshot: List<Absence>, feedbackSnapshot: List<Feedback>, onResult: (Boolean) -> Unit) =
+        viewModelScope.launch {
+            runCatching {
+                val root = JSONObject().apply {
+                    put("formatVersion", 1)
+                    put("players", JSONArray(playersSnapshot.map { player ->
+                        JSONObject().apply {
+                            put("id", player.id); put("firstName", player.firstName); put("lastName", player.lastName)
+                            put("age", player.age); put("position", player.position); put("isGuest", player.isGuest)
+                            put("email", player.email); put("phone", player.phone); putNullable("heightCm", player.heightCm)
+                            putNullable("jerseyNumber", player.jerseyNumber); put("notes", player.notes)
+                            put("serviceRating", player.serviceRating); put("receptionRating", player.receptionRating)
+                            put("settingRating", player.settingRating); put("attackRating", player.attackRating)
+                            put("blockRating", player.blockRating); put("defenseRating", player.defenseRating)
+                            put("motivationRating", player.motivationRating); put("techniqueRating", player.techniqueRating)
+                        }
+                    }))
+                    put("events", JSONArray(eventsSnapshot.map { event ->
+                        JSONObject().apply {
+                            put("id", event.id); put("title", event.title); put("type", event.type.name)
+                            put("startsAt", event.startsAt); put("durationMinutes", event.durationMinutes)
+                            put("recurrenceDays", event.recurrenceDays); putNullable("recurrenceEndAt", event.recurrenceEndAt)
+                            put("cancelled", event.cancelled)
+                        }
+                    }))
+                    put("eventGuests", JSONArray(guestsSnapshot.map { JSONObject().apply { put("playerId", it.playerId); put("eventId", it.eventId) } }))
+                    put("attendance", JSONArray(attendanceSnapshot.map { JSONObject().apply { put("playerId", it.playerId); put("eventId", it.eventId); put("status", it.status.name) } }))
+                    put("absences", JSONArray(absencesSnapshot.map { JSONObject().apply { put("id", it.id); put("playerId", it.playerId); put("startsAt", it.startsAt); put("endsAt", it.endsAt); put("reason", it.reason) } }))
+                    put("feedback", JSONArray(feedbackSnapshot.map { JSONObject().apply { put("id", it.id); put("category", it.category); put("title", it.title); put("details", it.details); put("createdAt", it.createdAt) } }))
+                }
+                resolver.openOutputStream(uri)?.use { it.write(root.toString().toByteArray(Charsets.UTF_8)) }
+                    ?: error("Impossible d'ouvrir le fichier de sauvegarde")
+            }.onSuccess { onResult(true) }.onFailure { onResult(false) }
+        }
+
+    fun importBackup(uri: Uri, resolver: android.content.ContentResolver, onResult: (Boolean) -> Unit) =
+        viewModelScope.launch {
+            runCatching {
+                val root = resolver.openInputStream(uri)?.use { JSONObject(it.readBytes().toString(Charsets.UTF_8)) }
+                    ?: error("Impossible de lire la sauvegarde")
+                require(root.optInt("formatVersion") == 1) { "Format de sauvegarde incompatible" }
+                val restoredPlayers = root.array("players").map { json ->
+                    Player(json.getLong("id"), json.getString("firstName"), json.getString("lastName"), json.getInt("age"), json.getString("position"), json.getBoolean("isGuest"), json.getString("email"), json.getString("phone"), json.optNullableInt("heightCm"), json.optNullableInt("jerseyNumber"), json.getString("notes"), json.getInt("serviceRating"), json.getInt("receptionRating"), json.getInt("settingRating"), json.getInt("attackRating"), json.getInt("blockRating"), json.getInt("defenseRating"), json.getInt("motivationRating"), json.getInt("techniqueRating"))
+                }
+                val restoredEvents = root.array("events").map { json ->
+                    VolleyEvent(json.getLong("id"), json.getString("title"), EventType.valueOf(json.getString("type")), json.getLong("startsAt"), json.getInt("durationMinutes"), json.getString("recurrenceDays"), json.optNullableLong("recurrenceEndAt"), json.getBoolean("cancelled"))
+                }
+                val restoredGuests = root.array("eventGuests").map { EventGuest(it.getLong("playerId"), it.getLong("eventId")) }
+                val restoredAttendance = root.array("attendance").map { Attendance(it.getLong("playerId"), it.getLong("eventId"), AttendanceStatus.valueOf(it.getString("status"))) }
+                val restoredAbsences = root.array("absences").map { Absence(it.getLong("id"), it.getLong("playerId"), it.getLong("startsAt"), it.getLong("endsAt"), it.getString("reason")) }
+                val restoredFeedback = root.array("feedback").map { Feedback(it.getLong("id"), it.getString("category"), it.getString("title"), it.getString("details"), it.getLong("createdAt")) }
+                db.withTransaction {
+                    db.eventGuests().deleteAll(); db.attendance().deleteAll(); db.absences().deleteAll()
+                    db.feedback().deleteAll(); db.events().deleteAll(); db.players().deleteAll()
+                    db.players().insertAll(restoredPlayers); db.events().insertAll(restoredEvents)
+                    db.eventGuests().insertAll(restoredGuests); db.attendance().insertAll(restoredAttendance)
+                    db.absences().insertAll(restoredAbsences); db.feedback().insertAll(restoredFeedback)
+                }
+            }.onSuccess { onResult(true) }.onFailure { onResult(false) }
+        }
+
 }
 
 @Composable
@@ -189,7 +274,23 @@ fun VolleyApp(vm: MainViewModel) {
     val events by vm.events.collectAsStateWithLifecycle(emptyList())
     val attendance by vm.attendance.collectAsStateWithLifecycle(emptyList())
     val guests by vm.eventGuests.collectAsStateWithLifecycle(emptyList())
+    val absences by vm.absences.collectAsStateWithLifecycle(emptyList())
     val feedback by vm.feedback.collectAsStateWithLifecycle(emptyList())
+    val context = LocalContext.current
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        uri?.let {
+            vm.exportBackup(it, context.contentResolver, players, events, guests, attendance, absences, feedback) { success ->
+                Toast.makeText(context, if (success) "Sauvegarde exportée" else "Échec de l'export", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let {
+            vm.importBackup(it, context.contentResolver) { success ->
+                Toast.makeText(context, if (success) "Sauvegarde restaurée" else "Échec de la restauration", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
     val appColors = lightColorScheme(
         primary = palette.tertiary,
         onPrimary = Color.White,
@@ -219,6 +320,12 @@ fun VolleyApp(vm: MainViewModel) {
                         }
                     },
                     actions = {
+                        IconButton(onClick = { exportLauncher.launch("volley-manager-backup.json") }) {
+                            Icon(Icons.Default.SaveAlt, "Exporter les données")
+                        }
+                        IconButton(onClick = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) }) {
+                            Icon(Icons.Default.Restore, "Importer les données")
+                        }
                         IconButton(onClick = { showFeedback = true }) { Icon(Icons.Default.Feedback, "Journal de feedback") }
                         IconButton(onClick = { showPalette = true }) { Icon(Icons.Default.Palette, "Personnaliser les couleurs") }
                     }

@@ -26,8 +26,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
@@ -174,7 +172,11 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
         }
 
     fun cancel(event: VolleyEvent) = viewModelScope.launch { db.events().update(event.copy(cancelled = true)) }
-    fun addGuest(eventId: Long, playerId: Long) = viewModelScope.launch { db.eventGuests().add(EventGuest(playerId, eventId)) }
+    fun addGuest(eventId: Long, playerId: Long) =
+        viewModelScope.launch {
+            db.eventGuests().add(EventGuest(playerId, eventId))
+            db.attendance().save(Attendance(playerId, eventId, AttendanceStatus.PRESENT))
+        }
     fun saveAttendance(playerId: Long, eventId: Long, status: AttendanceStatus) =
         viewModelScope.launch { db.attendance().save(Attendance(playerId, eventId, status)) }
 
@@ -906,31 +908,25 @@ private fun AttendanceView(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("${player.firstName} ${player.lastName}", Modifier.padding(top = 12.dp))
                 AssistChip(
-                    modifier = Modifier.pointerInput(event.id, player.id, current) {
-                        detectTapGestures(
-                            onLongPress = { if (current != AttendanceStatus.PRESENT) periodPlayer = player },
-                            onTap = {
-                                val next = when (current) {
-                                    AttendanceStatus.PRESENT -> AttendanceStatus.ABSENT
-                                    AttendanceStatus.ABSENT -> AttendanceStatus.EXCUSED
-                                    else -> AttendanceStatus.PRESENT
-                                }
-                                if (next == AttendanceStatus.PRESENT && events.any {
-                                        !it.cancelled && eventDate(it).isAfter(eventDate(event)) &&
-                                            attendance.any { record ->
-                                                record.playerId == player.id &&
-                                                    record.eventId == it.id &&
-                                                    (record.status == AttendanceStatus.ABSENT || record.status == AttendanceStatus.EXCUSED)
-                                            }
-                                    }) {
-                                    pendingPresence = player
-                                } else {
-                                    vm.saveAttendance(player.id, event.id, next)
-                                }
-                            }
-                        )
+                    onClick = {
+                        val next = when (current) {
+                            AttendanceStatus.PRESENT -> AttendanceStatus.ABSENT
+                            AttendanceStatus.ABSENT -> AttendanceStatus.EXCUSED
+                            else -> AttendanceStatus.PRESENT
+                        }
+                        if (next == AttendanceStatus.PRESENT && events.any {
+                                !it.cancelled && eventDate(it).isAfter(eventDate(event)) &&
+                                    attendance.any { record ->
+                                        record.playerId == player.id &&
+                                            record.eventId == it.id &&
+                                            (record.status == AttendanceStatus.ABSENT || record.status == AttendanceStatus.EXCUSED)
+                                    }
+                            }) {
+                            pendingPresence = player
+                        } else {
+                            vm.saveAttendance(player.id, event.id, next)
+                        }
                     },
-                    onClick = {},
                     colors = AssistChipDefaults.assistChipColors(
                         containerColor = when (current) {
                             AttendanceStatus.PRESENT -> Color(0xFFDDF5E3)

@@ -76,7 +76,7 @@ data class Feedback(
 interface PlayerDao {
     @Query("SELECT * FROM players ORDER BY lastName, firstName")
     fun observeAll(): Flow<List<Player>>
-    @Insert suspend fun insert(player: Player)
+    @Insert suspend fun insert(player: Player): Long
     @Update suspend fun update(player: Player)
     @Delete suspend fun delete(player: Player)
 }

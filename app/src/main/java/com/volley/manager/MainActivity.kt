@@ -22,6 +22,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
@@ -103,11 +105,14 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
     val eventGuests = db.eventGuests().observeAll()
     val feedback = db.feedback().observeAll()
 
-    fun addPlayer(first: String, last: String, age: Int, position: String, guest: Boolean, email: String, phone: String, heightCm: Int?, jerseyNumber: Int?, notes: String) =
-        viewModelScope.launch { db.players().insert(Player(firstName = first, lastName = last, age = age, position = position, isGuest = guest, email = email, phone = phone, heightCm = heightCm, jerseyNumber = jerseyNumber, notes = notes)) }
+    fun addPlayer(first: String, last: String, age: Int, position: String, guest: Boolean, email: String, phone: String, heightCm: Int?, jerseyNumber: Int?, notes: String, onCreated: (Long) -> Unit = {}) =
+        viewModelScope.launch {
+            val id = db.players().insert(Player(firstName = first, lastName = last, age = age, position = position, isGuest = guest, email = email, phone = phone, heightCm = heightCm, jerseyNumber = jerseyNumber, notes = notes))
+            onCreated(id)
+        }
 
-    fun updatePlayer(player: Player, first: String, last: String, age: Int, position: String, email: String, phone: String, heightCm: Int?, jerseyNumber: Int?, notes: String) =
-        viewModelScope.launch { db.players().update(player.copy(firstName = first, lastName = last, age = age, position = position, email = email, phone = phone, heightCm = heightCm, jerseyNumber = jerseyNumber, notes = notes)) }
+    fun updatePlayer(player: Player, first: String, last: String, age: Int, position: String, guest: Boolean, email: String, phone: String, heightCm: Int?, jerseyNumber: Int?, notes: String) =
+        viewModelScope.launch { db.players().update(player.copy(firstName = first, lastName = last, age = age, position = position, isGuest = guest, email = email, phone = phone, heightCm = heightCm, jerseyNumber = jerseyNumber, notes = notes)) }
 
     fun updateRatings(player: Player, ratings: List<Int>) =
         viewModelScope.launch {
@@ -149,6 +154,26 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
     fun addGuest(eventId: Long, playerId: Long) = viewModelScope.launch { db.eventGuests().add(EventGuest(playerId, eventId)) }
     fun saveAttendance(playerId: Long, eventId: Long, status: AttendanceStatus) =
         viewModelScope.launch { db.attendance().save(Attendance(playerId, eventId, status)) }
+
+    fun applyAbsencePeriod(playerId: Long, events: List<VolleyEvent>, start: LocalDate, end: LocalDate, status: AttendanceStatus, reason: String) =
+        viewModelScope.launch {
+            events.filter { !it.cancelled && eventDate(it) in start..end }
+                .forEach { db.attendance().save(Attendance(playerId, it.id, status)) }
+            db.absences().insert(
+                Absence(
+                    playerId = playerId,
+                    startsAt = start.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli(),
+                    endsAt = end.plusDays(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli() - 1,
+                    reason = reason
+                )
+            )
+        }
+
+    fun clearFutureAbsences(playerId: Long, events: List<VolleyEvent>, from: LocalDate) =
+        viewModelScope.launch {
+            events.filter { !it.cancelled && eventDate(it).isAfter(from) }
+                .forEach { db.attendance().save(Attendance(playerId, it.id, AttendanceStatus.PRESENT)) }
+        }
 
     fun addFeedback(category: String, title: String, details: String) =
         viewModelScope.launch { db.feedback().insert(Feedback(category = category, title = title, details = details)) }
@@ -388,8 +413,8 @@ private fun PlayersScreen(players: List<Player>, vm: MainViewModel) {
         creating = false
     }
     editing?.let { player ->
-        PlayerDialog(player, player.isGuest, { editing = null }) { first, last, age, position, _, email, phone, heightCm, jerseyNumber, notes ->
-            vm.updatePlayer(player, first, last, age, position, email, phone, heightCm, jerseyNumber, notes)
+    PlayerDialog(player, player.isGuest, { editing = null }) { first, last, age, position, guest, email, phone, heightCm, jerseyNumber, notes ->
+        vm.updatePlayer(player, first, last, age, position, guest, email, phone, heightCm, jerseyNumber, notes)
             editing = null
         }
     }
@@ -403,8 +428,26 @@ private fun PlayersScreen(players: List<Player>, vm: MainViewModel) {
 
 @Composable
 private fun PlayerList(players: List<Player>, vm: MainViewModel, edit: (Player) -> Unit, rate: (Player) -> Unit, modifier: Modifier = Modifier) {
+    val sortedPlayers = players.sortedWith(
+        compareBy<Player> { positions.indexOf(it.position).takeIf { index -> index >= 0 } ?: positions.size }
+            .thenComparator { first, second ->
+                val firstScore = weightedRating(
+                    first.position,
+                    listOf(first.serviceRating, first.receptionRating, first.settingRating, first.attackRating, first.blockRating, first.defenseRating, first.motivationRating, first.techniqueRating)
+                )
+                val secondScore = weightedRating(
+                    second.position,
+                    listOf(second.serviceRating, second.receptionRating, second.settingRating, second.attackRating, second.blockRating, second.defenseRating, second.motivationRating, second.techniqueRating)
+                )
+                when {
+                    firstScore == 0.0 && secondScore != 0.0 -> 1
+                    firstScore != 0.0 && secondScore == 0.0 -> -1
+                    else -> secondScore.compareTo(firstScore)
+                }
+            }
+    )
     LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = modifier.fillMaxWidth()) {
-        items(players) { player ->
+        items(sortedPlayers) { player ->
             ListItem(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -632,8 +675,12 @@ private fun CalendarView(events: List<VolleyEvent>, selectedDate: LocalDate, onD
                 Row(Modifier.fillMaxWidth()) {
                     for (dayIndex in 0..6) {
                         val day = first.plusDays((week * 7 + dayIndex).toLong())
-                        val dayEvents = events.filter { !it.cancelled && eventDate(it) == day }
                         val inMonth = day.month == month.month
+                        val dayEvents = if (inMonth) {
+                            events.filter { !it.cancelled && eventDate(it) == day }
+                        } else {
+                            emptyList()
+                        }
                         val selected = day == selectedDate
                         val eventTint = dayEvents.firstOrNull()?.let(::eventColor)
                         Box(Modifier.weight(1f).padding(2.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
@@ -731,8 +778,17 @@ private fun AttendanceView(
         }
         val guestIds = guests.filter { it.eventId == event.id }.map { it.playerId }.toSet()
         val roster = players.filter { !it.isGuest || it.id in guestIds }
-        Text("Présences — ${event.title}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp))
+        val presentCount = roster.count { player ->
+            val status = attendance.firstOrNull { record ->
+                record.playerId == player.id && record.eventId == event.id
+            }?.status ?: if (player.isGuest) AttendanceStatus.ABSENT else AttendanceStatus.PRESENT
+            status == AttendanceStatus.PRESENT
+        }
+        Text("Présences — ${event.title} ($presentCount/${roster.size})", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp))
         var showGuestPicker by remember(event.id) { mutableStateOf(false) }
+        var showGuestCreation by remember(event.id) { mutableStateOf(false) }
+        var periodPlayer by remember(event.id) { mutableStateOf<Player?>(null) }
+        var pendingPresence by remember(event.id) { mutableStateOf<Player?>(null) }
         OutlinedButton(onClick = { showGuestPicker = true }, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Default.PersonAdd, null)
             Spacer(Modifier.width(6.dp))
@@ -743,14 +799,31 @@ private fun AttendanceView(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("${player.firstName} ${player.lastName}", Modifier.padding(top = 12.dp))
                 AssistChip(
-                    onClick = {
-                        val next = when (current) {
-                            AttendanceStatus.PRESENT -> AttendanceStatus.ABSENT
-                            AttendanceStatus.ABSENT -> AttendanceStatus.EXCUSED
-                            else -> AttendanceStatus.PRESENT
-                        }
-                        vm.saveAttendance(player.id, event.id, next)
+                    modifier = Modifier.pointerInput(event.id, player.id, current) {
+                        detectTapGestures(
+                            onLongPress = { if (current != AttendanceStatus.PRESENT) periodPlayer = player },
+                            onTap = {
+                                val next = when (current) {
+                                    AttendanceStatus.PRESENT -> AttendanceStatus.ABSENT
+                                    AttendanceStatus.ABSENT -> AttendanceStatus.EXCUSED
+                                    else -> AttendanceStatus.PRESENT
+                                }
+                                if (next == AttendanceStatus.PRESENT && events.any {
+                                        !it.cancelled && eventDate(it).isAfter(eventDate(event)) &&
+                                            attendance.any { record ->
+                                                record.playerId == player.id &&
+                                                    record.eventId == it.id &&
+                                                    (record.status == AttendanceStatus.ABSENT || record.status == AttendanceStatus.EXCUSED)
+                                            }
+                                    }) {
+                                    pendingPresence = player
+                                } else {
+                                    vm.saveAttendance(player.id, event.id, next)
+                                }
+                            }
+                        )
                     },
+                    onClick = {},
                     colors = AssistChipDefaults.assistChipColors(
                         containerColor = when (current) {
                             AttendanceStatus.PRESENT -> Color(0xFFDDF5E3)
@@ -781,6 +854,11 @@ private fun AttendanceView(
                 title = { Text("Ajouter un invité") },
                 text = {
                     Column {
+                        TextButton(onClick = { showGuestCreation = true }, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.PersonAdd, null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Créer un invité")
+                        }
                         players.filter { it.isGuest && it.id !in guestIds }.forEach { guest ->
                             TextButton(
                                 onClick = { vm.addGuest(event.id, guest.id); showGuestPicker = false },
@@ -792,7 +870,106 @@ private fun AttendanceView(
                 confirmButton = { TextButton(onClick = { showGuestPicker = false }) { Text("Fermer") } }
             )
         }
+        if (showGuestCreation) {
+            PlayerDialog(null, true, { showGuestCreation = false }) { first, last, age, position, _, email, phone, heightCm, jerseyNumber, notes ->
+                vm.addPlayer(first, last, age, position, true, email, phone, heightCm, jerseyNumber, notes) { playerId ->
+                    vm.addGuest(event.id, playerId)
+                }
+                showGuestCreation = false
+            }
+        }
+        periodPlayer?.let { player ->
+            AbsencePeriodDialog(
+                initialDate = eventDate(event),
+                onDismiss = { periodPlayer = null },
+                onSave = { endDate, status, reason ->
+                    vm.applyAbsencePeriod(player.id, events, eventDate(event), endDate, status, reason)
+                    periodPlayer = null
+                }
+            )
+        }
+        pendingPresence?.let { player ->
+            AlertDialog(
+                onDismissRequest = { pendingPresence = null },
+                title = { Text("Absence planifiée") },
+                text = { Text("Ce joueur a d'autres absences prévues. Les passer aussi en présence ?") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        vm.clearFutureAbsences(player.id, events, eventDate(event))
+                        vm.saveAttendance(player.id, event.id, AttendanceStatus.PRESENT)
+                        pendingPresence = null
+                    }) { Text("Oui, toutes") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        vm.saveAttendance(player.id, event.id, AttendanceStatus.PRESENT)
+                        pendingPresence = null
+                    }) { Text("Seulement celle-ci") }
+                }
+            )
+        }
     }
+    }
+}
+
+@Composable
+private fun AbsencePeriodDialog(
+    initialDate: LocalDate,
+    onDismiss: () -> Unit,
+    onSave: (LocalDate, AttendanceStatus, String) -> Unit
+) {
+    var endDate by remember { mutableStateOf(initialDate) }
+    var justified by remember { mutableStateOf(false) }
+    var reason by remember { mutableStateOf("") }
+    var showDatePicker by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Absence sur une période") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Début : ${initialDate.format(dateFormatter)}")
+                OutlinedButton(onClick = { showDatePicker = true }) {
+                    Text("Fin : ${endDate.format(dateFormatter)}")
+                }
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Checkbox(checked = justified, onCheckedChange = { justified = it })
+                    Text("Justifié")
+                }
+                if (justified) {
+                    OutlinedTextField(
+                        value = reason,
+                        onValueChange = { reason = it },
+                        label = { Text("Motif") },
+                        minLines = 2
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSave(endDate, if (justified) AttendanceStatus.EXCUSED else AttendanceStatus.ABSENT, reason.trim())
+                }
+            ) { Text("Appliquer") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } }
+    )
+    if (showDatePicker) {
+        val state = rememberDatePickerState(
+            initialSelectedDateMillis = endDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        )
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    state.selectedDateMillis?.let {
+                        endDate = java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate()
+                    }
+                    showDatePicker = false
+                }) { Text("Valider") }
+            },
+            dismissButton = { TextButton(onClick = { showDatePicker = false }) { Text("Annuler") } }
+        ) { DatePicker(state = state) }
     }
 }
 

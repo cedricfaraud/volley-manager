@@ -22,6 +22,9 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v4
+        with:
+          # setup-android defaults to the removed legacy "tools" package.
+          packages: platform-tools
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v5
         with:

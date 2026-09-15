@@ -16,6 +16,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
@@ -869,22 +872,6 @@ private fun AttendanceView(
         val eventIndex = orderedEvents.indexOfFirst { it.id == event.id }
         val previous = orderedEvents.getOrNull(eventIndex - 1)
         val next = orderedEvents.getOrNull(eventIndex + 1)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            if (previous != null) {
-                TextButton(onClick = { onEvent(previous) }) {
-                    Icon(Icons.Default.ChevronLeft, "Événement précédent")
-                    Text("Précédent")
-                }
-            } else {
-                Spacer(Modifier.width(1.dp))
-            }
-            if (next != null) {
-                TextButton(onClick = { onEvent(next) }) {
-                    Text("Suivant")
-                    Icon(Icons.Default.ChevronRight, "Événement suivant")
-                }
-            }
-        }
         val guestIds = guests.filter { it.eventId == event.id }.map { it.playerId }.toSet()
         val roster = players.filter { !it.isGuest || it.id in guestIds }
         val presentCount = roster.count { player ->
@@ -893,7 +880,31 @@ private fun AttendanceView(
             }?.status ?: if (player.isGuest) AttendanceStatus.ABSENT else AttendanceStatus.PRESENT
             status == AttendanceStatus.PRESENT
         }
-        Text("Présences — ${event.title} ($presentCount/${roster.size})", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp))
+        var horizontalDrag by remember(event.id) { mutableFloatStateOf(0f) }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 16.dp)
+                .pointerInput(event.id, previous?.id, next?.id) {
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            when {
+                                horizontalDrag > 80f && previous != null -> onEvent(previous)
+                                horizontalDrag < -80f && next != null -> onEvent(next)
+                            }
+                            horizontalDrag = 0f
+                        },
+                        onHorizontalDrag = { _, amount -> horizontalDrag += amount }
+                    )
+                },
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+        ) {
+            Text(
+                "Séance ${event.title} · ${eventDate(event).format(dateFormatter)} · $presentCount/${roster.size}",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f)
+            )
+        }
         var showGuestPicker by remember(event.id) { mutableStateOf(false) }
         var showGuestCreation by remember(event.id) { mutableStateOf(false) }
         var periodPlayer by remember(event.id) { mutableStateOf<Player?>(null) }
@@ -908,7 +919,8 @@ private fun AttendanceView(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("${player.firstName} ${player.lastName}", Modifier.padding(top = 12.dp))
                 AssistChip(
-                    onClick = {
+                    modifier = Modifier.combinedClickable(
+                        onClick = {
                         val next = when (current) {
                             AttendanceStatus.PRESENT -> AttendanceStatus.ABSENT
                             AttendanceStatus.ABSENT -> AttendanceStatus.EXCUSED
@@ -926,6 +938,16 @@ private fun AttendanceView(
                         } else {
                             vm.saveAttendance(player.id, event.id, next)
                         }
+                        },
+                        onLongClick = { periodPlayer = player }
+                    ),
+                    onClick = {
+                        val next = when (current) {
+                            AttendanceStatus.PRESENT -> AttendanceStatus.ABSENT
+                            AttendanceStatus.ABSENT -> AttendanceStatus.EXCUSED
+                            else -> AttendanceStatus.PRESENT
+                        }
+                        vm.saveAttendance(player.id, event.id, next)
                     },
                     colors = AssistChipDefaults.assistChipColors(
                         containerColor = when (current) {
@@ -1078,33 +1100,46 @@ private fun AbsencePeriodDialog(
 
 @Composable
 private fun StatisticsView(events: List<VolleyEvent>, players: List<Player>, attendance: List<Attendance>) {
-    val collective = players.filterNot { it.isGuest }
     val sessions = events.filter { it.type == EventType.TRAINING && !it.cancelled && eventDate(it).isBefore(LocalDate.now()) }
     val currentMonth = YearMonth.now()
     val monthSessions = sessions.filter { YearMonth.from(eventDate(it)) == currentMonth }
     val seasonStart = sessions.minOfOrNull { eventDate(it) }
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    val collective = players.filterNot { it.isGuest }
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
         Text("Statistiques d'absence", style = MaterialTheme.typography.titleLarge)
         Text("Saison : ${seasonStart?.format(dateFormatter) ?: "aucune séance passée"} → aujourd'hui")
         Text("Séances passées : ${sessions.size} · ce mois-ci : ${monthSessions.size}")
-        val collectiveSeason = collectiveAbsenceBreakdown(collective.map { it.id }, sessions, attendance)
-        val collectiveMonth = collectiveAbsenceBreakdown(collective.map { it.id }, monthSessions, attendance)
-        MetricCard("Absence du collectif — saison", "${collectiveSeason.totalRate} % dont ${collectiveSeason.justifiedRate} % justifiées", Icons.Default.Insights, Modifier.fillMaxWidth())
-        MetricCard("Absence du collectif — mois", "${collectiveMonth.totalRate} % dont ${collectiveMonth.justifiedRate} % justifiées", Icons.Default.CalendarMonth, Modifier.fillMaxWidth())
         Text("Suivi individuel", style = MaterialTheme.typography.titleMedium)
-        LazyColumn {
-            items(collective.sortedByDescending { absenceRate(it.id, sessions, attendance) }) { player ->
-                val season = absenceBreakdown(player.id, sessions, attendance)
-                val month = absenceBreakdown(player.id, monthSessions, attendance)
-                ListItem(
-                    headlineContent = { Text("${player.firstName} ${player.lastName}") },
-                    supportingContent = {
-                        Text(
-                            "Mois : ${month.totalRate} % dont ${month.justifiedRate} % justifiées · " +
-                                "Année : ${season.totalRate} % dont ${season.justifiedRate} % justifiées"
+        collective.sortedByDescending { absenceRate(it.id, sessions, attendance) }.forEach { player ->
+            val season = absenceBreakdown(player.id, sessions, attendance)
+            val month = absenceBreakdown(player.id, monthSessions, attendance)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .45f)
+                )
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("${player.firstName} ${player.lastName}", style = MaterialTheme.typography.titleMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        MetricCard(
+                            "Mois · dont justifiées",
+                            "${month.totalRate} % · ${month.justifiedRate} %",
+                            Icons.Default.CalendarMonth,
+                            Modifier.weight(1f)
+                        )
+                        MetricCard(
+                            "Saison · dont justifiées",
+                            "${season.totalRate} % · ${season.justifiedRate} %",
+                            Icons.Default.Insights,
+                            Modifier.weight(1f)
                         )
                     }
-                )
+                }
             }
         }
         Text("Les invités sont exclus du suivi collectif et individuel.")

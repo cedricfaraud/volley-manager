@@ -17,9 +17,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
@@ -862,7 +860,6 @@ private fun AttendanceView(
     val orderedEvents = events.filterNot { it.cancelled }.sortedBy { it.startsAt }
     val dayEvents = orderedEvents.filter { eventDate(it) == date }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-    Text("Séances du ${date.format(dateFormatter)}", style = MaterialTheme.typography.titleLarge)
     if (dayEvents.isEmpty()) Text("Aucune séance à cette date.", Modifier.padding(top = 16.dp))
     if (selectedEvent == null) {
         dayEvents.forEach { event ->
@@ -881,23 +878,10 @@ private fun AttendanceView(
             }?.status ?: if (player.isGuest) AttendanceStatus.ABSENT else AttendanceStatus.PRESENT
             status == AttendanceStatus.PRESENT
         }
-        var horizontalDrag by remember(event.id) { mutableFloatStateOf(0f) }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 16.dp)
-                .pointerInput(event.id, previous?.id, next?.id) {
-                    detectHorizontalDragGestures(
-                        onDragEnd = {
-                            when {
-                                horizontalDrag > 80f && previous != null -> onEvent(previous)
-                                horizontalDrag < -80f && next != null -> onEvent(next)
-                            }
-                            horizontalDrag = 0f
-                        },
-                        onHorizontalDrag = { _, amount -> horizontalDrag += amount }
-                    )
-                },
+                .padding(top = 16.dp),
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
         ) {
             Text(
@@ -905,6 +889,16 @@ private fun AttendanceView(
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.weight(1f)
             )
+            if (previous != null) {
+                IconButton(onClick = { onEvent(previous) }) {
+                    Icon(Icons.Default.ChevronLeft, "Séance précédente")
+                }
+            }
+            if (next != null) {
+                IconButton(onClick = { onEvent(next) }) {
+                    Icon(Icons.Default.ChevronRight, "Séance suivante")
+                }
+            }
         }
         var showGuestPicker by remember(event.id) { mutableStateOf(false) }
         var showGuestCreation by remember(event.id) { mutableStateOf(false) }

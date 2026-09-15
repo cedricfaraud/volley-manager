@@ -337,7 +337,7 @@ fun VolleyApp(vm: MainViewModel) {
             },
             bottomBar = {
                 NavigationBar(containerColor = Color.White) {
-                    listOf("Tableau", "Joueurs", "Calendrier").forEachIndexed { index, label ->
+                    listOf("Accueil", "Joueurs", "Calendrier").forEachIndexed { index, label ->
                         NavigationBarItem(
                             selected = tab == index,
                             onClick = { tab = index },
@@ -458,7 +458,14 @@ private fun PaletteDialog(current: AppPalette, onDismiss: () -> Unit, onSave: (A
 private fun Dashboard(players: List<Player>, events: List<VolleyEvent>, attendance: List<Attendance>) {
     val collective = players.filterNot { it.isGuest }
     val pastSessions = events.filter { it.type == EventType.TRAINING && !it.cancelled && eventDate(it).isBefore(LocalDate.now()) }
-    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    val mostAbsent = collective
+        .map { it to absenceRate(it.id, pastSessions, attendance) }
+        .sortedByDescending { it.second }
+        .take(3)
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
         Text("Vue d'ensemble", style = MaterialTheme.typography.headlineMedium)
         Text("Les chiffres clés de votre saison", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -477,6 +484,27 @@ private fun Dashboard(players: List<Player>, events: List<VolleyEvent>, attendan
             }
         }
         Text("Les invités ne sont jamais inclus dans ces statistiques.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Les plus absents", style = MaterialTheme.typography.titleMedium)
+        if (mostAbsent.isEmpty()) {
+            Text("Aucun joueur à afficher.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+            mostAbsent.forEach { (player, rate) ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .45f)),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        Text("${player.firstName} ${player.lastName}", style = MaterialTheme.typography.bodyLarge)
+                        Text("$rate %", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1113,31 +1141,47 @@ private fun StatisticsView(events: List<VolleyEvent>, players: List<Player>, att
             val month = absenceBreakdown(player.id, monthSessions, attendance)
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .45f)
-                )
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.background)
             ) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("${player.firstName} ${player.lastName}", style = MaterialTheme.typography.titleMedium)
+                Column(Modifier.padding(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "${player.firstName} ${player.lastName}",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp)
+                    )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        MetricCard(
-                            "Mois · dont justifiées",
-                            "${month.totalRate} % · ${month.justifiedRate} %",
-                            Icons.Default.CalendarMonth,
+                        StatisticsMetric(
+                            "Mois",
+                            "${month.totalRate} % dont ${month.justifiedRate} % justifiées",
+                            MaterialTheme.colorScheme.secondary.copy(alpha = .18f),
                             Modifier.weight(1f)
                         )
-                        MetricCard(
-                            "Saison · dont justifiées",
-                            "${season.totalRate} % · ${season.justifiedRate} %",
-                            Icons.Default.Insights,
+                        StatisticsMetric(
+                            "Saison",
+                            "${season.totalRate} % dont ${season.justifiedRate} % justifiées",
+                            MaterialTheme.colorScheme.tertiary.copy(alpha = .18f),
                             Modifier.weight(1f)
                         )
                     }
                 }
             }
         }
+
         Text("Les invités sont exclus du suivi collectif et individuel.")
+    }
+}
+
+@Composable
+private fun StatisticsMetric(label: String, value: String, color: Color, modifier: Modifier) {
+    Column(
+        modifier
+            .background(color, RoundedCornerShape(14.dp))
+            .padding(horizontal = 10.dp, vertical = 9.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        Text(label, style = MaterialTheme.typography.labelSmall)
+        Text(value, style = MaterialTheme.typography.bodySmall)
     }
 }
 

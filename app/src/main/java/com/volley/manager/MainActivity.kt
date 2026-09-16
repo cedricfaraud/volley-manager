@@ -782,7 +782,22 @@ private fun CalendarArea(
     Column(Modifier.padding(16.dp)) {
         PrimaryTabRow(selectedTabIndex = subTab) {
             listOf("Calendrier", "Présences", "Statistiques").forEachIndexed { index, label ->
-                Tab(selected = subTab == index, onClick = { subTab = index }, text = { Text(label) })
+                Tab(
+                    selected = subTab == index,
+                    onClick = {
+                        if (index == 1 && selectedEvent == null) {
+                            val today = LocalDate.now()
+                            events.filter { !it.cancelled && !eventDate(it).isBefore(today) }
+                                .minByOrNull { it.startsAt }
+                                ?.let { nextEvent ->
+                                    selectedEvent = nextEvent
+                                    selectedDate = eventDate(nextEvent)
+                                }
+                        }
+                        subTab = index
+                    },
+                    text = { Text(label) }
+                )
             }
         }
         Spacer(Modifier.height(12.dp))

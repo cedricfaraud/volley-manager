@@ -105,6 +105,9 @@ private fun JSONObject.optNullableInt(name: String): Int? =
 private fun JSONObject.optNullableLong(name: String): Long? =
     if (isNull(name)) null else getLong(name)
 
+private fun JSONObject.optNullableString(name: String): String? =
+    if (!has(name) || isNull(name)) null else getString(name)
+
 class MainActivity : ComponentActivity() {
     private val vm by viewModels<MainViewModel> {
         object : ViewModelProvider.Factory {
@@ -155,6 +158,9 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
         viewModelScope.launch {
             val recurrence = recurrenceDays.sorted().joinToString(",")
             val end = recurrenceEnd ?: date.plusYears(1)
+            // One seriesId per "add event" call: links every occurrence of a recurring
+            // series (or the lone standalone event) so they can later be targeted together.
+            val seriesId = java.util.UUID.randomUUID().toString()
             var cursor = date
             while (!cursor.isAfter(end)) {
                 if (cursor == date || cursor.dayOfWeek.value - 1 in recurrenceDays) {
@@ -165,7 +171,8 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
                             startsAt = cursor.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli(),
                             durationMinutes = 120,
                             recurrenceDays = if (cursor == date) recurrence else "",
-                            recurrenceEndAt = if (cursor == date) recurrenceEnd?.atStartOfDay(ZoneId.systemDefault())?.toInstant()?.toEpochMilli() else null
+                            recurrenceEndAt = if (cursor == date) recurrenceEnd?.atStartOfDay(ZoneId.systemDefault())?.toInstant()?.toEpochMilli() else null,
+                            seriesId = seriesId
                         )
                     )
                 }
@@ -174,6 +181,26 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
         }
 
     fun cancel(event: VolleyEvent) = viewModelScope.launch { db.events().update(event.copy(cancelled = true)) }
+
+    /**
+     * Deletes a calendar entry. When [includeFutureOccurrences] is true and the event
+     * belongs to a recurring series, this event and every later occurrence of the same
+     * series are deleted too; otherwise only this single event is removed.
+     */
+    fun deleteEvent(event: VolleyEvent, includeFutureOccurrences: Boolean) =
+        viewModelScope.launch {
+            db.withTransaction {
+                if (includeFutureOccurrences && event.seriesId != null) {
+                    db.eventGuests().deleteForSeriesFrom(event.seriesId, event.startsAt)
+                    db.attendance().deleteForSeriesFrom(event.seriesId, event.startsAt)
+                    db.events().deleteSeriesFrom(event.seriesId, event.startsAt)
+                } else {
+                    db.eventGuests().deleteForEvent(event.id)
+                    db.attendance().deleteForEvent(event.id)
+                    db.events().deleteById(event.id)
+                }
+            }
+        }
     fun addGuest(eventId: Long, playerId: Long) =
         viewModelScope.launch {
             db.eventGuests().add(EventGuest(playerId, eventId))
@@ -227,7 +254,7 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
                             put("id", event.id); put("title", event.title); put("type", event.type.name)
                             put("startsAt", event.startsAt); put("durationMinutes", event.durationMinutes)
                             put("recurrenceDays", event.recurrenceDays); putNullable("recurrenceEndAt", event.recurrenceEndAt)
-                            put("cancelled", event.cancelled)
+                            put("cancelled", event.cancelled); putNullable("seriesId", event.seriesId)
                         }
                     }))
                     put("eventGuests", JSONArray(guestsSnapshot.map { JSONObject().apply { put("playerId", it.playerId); put("eventId", it.eventId) } }))
@@ -250,7 +277,7 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
                     Player(json.getLong("id"), json.getString("firstName"), json.getString("lastName"), json.getInt("age"), json.getString("position"), json.getBoolean("isGuest"), json.getString("email"), json.getString("phone"), json.optNullableInt("heightCm"), json.optNullableInt("jerseyNumber"), json.getString("notes"), json.getInt("serviceRating"), json.getInt("receptionRating"), json.getInt("settingRating"), json.getInt("attackRating"), json.getInt("blockRating"), json.getInt("defenseRating"), json.getInt("motivationRating"), json.getInt("techniqueRating"))
                 }
                 val restoredEvents = root.array("events").map { json ->
-                    VolleyEvent(json.getLong("id"), json.getString("title"), EventType.valueOf(json.getString("type")), json.getLong("startsAt"), json.getInt("durationMinutes"), json.getString("recurrenceDays"), json.optNullableLong("recurrenceEndAt"), json.getBoolean("cancelled"))
+                    VolleyEvent(json.getLong("id"), json.getString("title"), EventType.valueOf(json.getString("type")), json.getLong("startsAt"), json.getInt("durationMinutes"), json.getString("recurrenceDays"), json.optNullableLong("recurrenceEndAt"), json.getBoolean("cancelled"), json.optNullableString("seriesId"))
                 }
                 val restoredGuests = root.array("eventGuests").map { EventGuest(it.getLong("playerId"), it.getLong("eventId")) }
                 val restoredAttendance = root.array("attendance").map { Attendance(it.getLong("playerId"), it.getLong("eventId"), AttendanceStatus.valueOf(it.getString("status"))) }
@@ -788,6 +815,12 @@ private fun CalendarView(events: List<VolleyEvent>, selectedDate: LocalDate, onD
     var month by remember { mutableStateOf(YearMonth.from(selectedDate)) }
     var weekMode by remember { mutableStateOf(false) }
     var showAdd by remember { mutableStateOf(false) }
+    var pendingDeleteEvent by remember { mutableStateOf<VolleyEvent?>(null) }
+    var deleteFutureOccurrences by remember { mutableStateOf(false) }
+    val onEventLongPress: (VolleyEvent) -> Unit = { event ->
+        pendingDeleteEvent = event
+        deleteFutureOccurrences = false
+    }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(if (weekMode) "Semaine du ${month.atDay(1).format(dateFormatter)}" else month.month.name.lowercase().replaceFirstChar(Char::uppercase) + " ${month.year}", style = MaterialTheme.typography.titleLarge)
@@ -804,7 +837,7 @@ private fun CalendarView(events: List<VolleyEvent>, selectedDate: LocalDate, onD
         }
         if (weekMode) {
             val start = selectedDate.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
-            WeekRow(start, events, selectedDate, onDate)
+            WeekRow(start, events, selectedDate, onDate, onEventLongPress)
         } else {
             Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
                 weekdays.forEach { Text(it, Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -823,17 +856,22 @@ private fun CalendarView(events: List<VolleyEvent>, selectedDate: LocalDate, onD
                         val selected = day == selectedDate
                         val eventTint = dayEvents.firstOrNull()?.let(::eventColor)
                         Box(Modifier.weight(1f).padding(2.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
-                            TextButton(
-                                onClick = { onDate(day) },
-                                modifier = Modifier.size(42.dp),
-                                shape = CircleShape,
-                                colors = ButtonDefaults.textButtonColors(
-                                    containerColor = when {
-                                        selected -> MaterialTheme.colorScheme.tertiary
-                                        dayEvents.isNotEmpty() -> (eventTint ?: MaterialTheme.colorScheme.secondary).copy(alpha = .12f)
-                                        else -> Color.Transparent
-                                    }
-                                )
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        when {
+                                            selected -> MaterialTheme.colorScheme.tertiary
+                                            dayEvents.isNotEmpty() -> (eventTint ?: MaterialTheme.colorScheme.secondary).copy(alpha = .12f)
+                                            else -> Color.Transparent
+                                        }
+                                    )
+                                    .combinedClickable(
+                                        onClick = { onDate(day) },
+                                        onLongClick = dayEvents.firstOrNull()?.let { event -> { onEventLongPress(event) } }
+                                    ),
+                                contentAlignment = androidx.compose.ui.Alignment.Center
                             ) {
                                 Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
                                     Text(
@@ -856,15 +894,37 @@ private fun CalendarView(events: List<VolleyEvent>, selectedDate: LocalDate, onD
         vm.addEvent(title, date, type, recurrence, recurrenceEnd)
         showAdd = false
     }
+    pendingDeleteEvent?.let { event ->
+        DeleteEventDialog(
+            event = event,
+            canDeleteFutureOccurrences = hasFutureInSeries(event, events),
+            deleteFutureOccurrences = deleteFutureOccurrences,
+            onDeleteFutureOccurrencesChange = { deleteFutureOccurrences = it },
+            onDismiss = { pendingDeleteEvent = null },
+            onConfirm = {
+                vm.deleteEvent(event, deleteFutureOccurrences)
+                pendingDeleteEvent = null
+            }
+        )
+    }
 }
 
 @Composable
-private fun WeekRow(start: LocalDate, events: List<VolleyEvent>, selected: LocalDate, onDate: (LocalDate) -> Unit) {
+private fun WeekRow(start: LocalDate, events: List<VolleyEvent>, selected: LocalDate, onDate: (LocalDate) -> Unit, onEventLongPress: (VolleyEvent) -> Unit) {
     Row(Modifier.fillMaxWidth()) {
         (0..6).forEach { offset ->
             val day = start.plusDays(offset.toLong())
             val dayEvents = events.filter { !it.cancelled && eventDate(it) == day }
-            TextButton(onClick = { onDate(day) }, modifier = Modifier.weight(1f)) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .combinedClickable(
+                        onClick = { onDate(day) },
+                        onLongClick = dayEvents.firstOrNull()?.let { event -> { onEventLongPress(event) } }
+                    )
+                    .padding(vertical = 8.dp),
+                contentAlignment = androidx.compose.ui.Alignment.Center
+            ) {
                 Text(
                     "${weekdays[offset]}\n${day.dayOfMonth}${if (dayEvents.isNotEmpty()) " •" else ""}",
                     color = dayEvents.firstOrNull()?.let(::eventColor) ?: LocalContentColor.current
@@ -872,6 +932,35 @@ private fun WeekRow(start: LocalDate, events: List<VolleyEvent>, selected: Local
             }
         }
     }
+}
+
+@Composable
+private fun DeleteEventDialog(
+    event: VolleyEvent,
+    canDeleteFutureOccurrences: Boolean,
+    deleteFutureOccurrences: Boolean,
+    onDeleteFutureOccurrencesChange: (Boolean) -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Supprimer l'événement ?") },
+        text = {
+            Column {
+                Text("${event.title} · ${eventDate(event).format(dateFormatter)}")
+                if (canDeleteFutureOccurrences) {
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Checkbox(deleteFutureOccurrences, onDeleteFutureOccurrencesChange)
+                        Text("Supprimer les occurrences à venir")
+                    }
+                }
+            }
+        },
+        confirmButton = { Button(onClick = onConfirm) { Text("Supprimer") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } }
+    )
 }
 
 @Composable
@@ -1258,6 +1347,10 @@ private fun EventDialog(
 }
 
 private fun eventDate(event: VolleyEvent) = java.time.Instant.ofEpochMilli(event.startsAt).atZone(ZoneId.systemDefault()).toLocalDate()
+
+/** True if [event] belongs to a recurring series that has at least one later occurrence. */
+private fun hasFutureInSeries(event: VolleyEvent, events: List<VolleyEvent>): Boolean =
+    event.seriesId != null && events.any { it.id != event.id && it.seriesId == event.seriesId && it.startsAt > event.startsAt }
 private fun EventType.label() = when (this) {
     EventType.TRAINING -> "Séance"
     EventType.MATCH -> "Match"

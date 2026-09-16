@@ -38,6 +38,11 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.platform.ViewConfiguration
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -995,27 +1000,39 @@ private fun AttendanceView(
             }?.status ?: if (player.isGuest) AttendanceStatus.ABSENT else AttendanceStatus.PRESENT
             status == AttendanceStatus.PRESENT
         }
-        Row(
+        val swipeThresholdPx = with(LocalDensity.current) { 56.dp.toPx() }
+        var dragAccumulator by remember(event.id) { mutableStateOf(0f) }
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 16.dp),
-            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                .padding(top = 16.dp)
+                .pointerInput(event.id, previous, next) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { dragAccumulator = 0f },
+                        onDragCancel = { dragAccumulator = 0f },
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            dragAccumulator += dragAmount
+                        },
+                        onDragEnd = {
+                            when {
+                                dragAccumulator <= -swipeThresholdPx -> next?.let(onEvent)
+                                dragAccumulator >= swipeThresholdPx -> previous?.let(onEvent)
+                            }
+                            dragAccumulator = 0f
+                        }
+                    )
+                }
         ) {
             Text(
                 "Séance ${event.title} · ${eventDate(event).format(dateFormatter)} · $presentCount/${roster.size}",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.weight(1f)
+                style = MaterialTheme.typography.titleMedium
             )
-            if (previous != null) {
-                IconButton(onClick = { onEvent(previous) }) {
-                    Icon(Icons.Default.ChevronLeft, "Séance précédente")
-                }
-            }
-            if (next != null) {
-                IconButton(onClick = { onEvent(next) }) {
-                    Icon(Icons.Default.ChevronRight, "Séance suivante")
-                }
-            }
+            Text(
+                "Glissez à gauche ou à droite pour changer de séance",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
         var showGuestPicker by remember(event.id) { mutableStateOf(false) }
         var showGuestCreation by remember(event.id) { mutableStateOf(false) }
@@ -1028,61 +1045,62 @@ private fun AttendanceView(
         }
         roster.forEach { player ->
             val current = attendance.firstOrNull { it.playerId == player.id && it.eventId == event.id }?.status ?: if (player.isGuest) AttendanceStatus.ABSENT else AttendanceStatus.PRESENT
+            val cycleStatus: () -> Unit = {
+                val nextStatus = when (current) {
+                    AttendanceStatus.PRESENT -> AttendanceStatus.ABSENT
+                    AttendanceStatus.ABSENT -> AttendanceStatus.EXCUSED
+                    else -> AttendanceStatus.PRESENT
+                }
+                if (nextStatus == AttendanceStatus.PRESENT && events.any {
+                        !it.cancelled && eventDate(it).isAfter(eventDate(event)) &&
+                            attendance.any { record ->
+                                record.playerId == player.id &&
+                                    record.eventId == it.id &&
+                                    (record.status == AttendanceStatus.ABSENT || record.status == AttendanceStatus.EXCUSED)
+                            }
+                    }) {
+                    pendingPresence = player
+                } else {
+                    vm.saveAttendance(player.id, event.id, nextStatus)
+                }
+            }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("${player.firstName} ${player.lastName}", Modifier.padding(top = 12.dp))
-                AssistChip(
-                    modifier = Modifier.combinedClickable(
-                        onClick = {
-                        val next = when (current) {
-                            AttendanceStatus.PRESENT -> AttendanceStatus.ABSENT
-                            AttendanceStatus.ABSENT -> AttendanceStatus.EXCUSED
-                            else -> AttendanceStatus.PRESENT
-                        }
-                        if (next == AttendanceStatus.PRESENT && events.any {
-                                !it.cancelled && eventDate(it).isAfter(eventDate(event)) &&
-                                    attendance.any { record ->
-                                        record.playerId == player.id &&
-                                            record.eventId == it.id &&
-                                            (record.status == AttendanceStatus.ABSENT || record.status == AttendanceStatus.EXCUSED)
-                                    }
-                            }) {
-                            pendingPresence = player
-                        } else {
-                            vm.saveAttendance(player.id, event.id, next)
-                        }
-                        },
-                        onLongClick = { periodPlayer = player }
-                    ),
-                    onClick = {
-                        val next = when (current) {
-                            AttendanceStatus.PRESENT -> AttendanceStatus.ABSENT
-                            AttendanceStatus.ABSENT -> AttendanceStatus.EXCUSED
-                            else -> AttendanceStatus.PRESENT
-                        }
-                        vm.saveAttendance(player.id, event.id, next)
-                    },
-                    colors = AssistChipDefaults.assistChipColors(
-                        containerColor = when (current) {
-                            AttendanceStatus.PRESENT -> Color(0xFFDDF5E3)
-                            AttendanceStatus.EXCUSED -> Color(0xFFFFE8C2)
-                            else -> Color(0xFFFFDAD6)
-                        },
-                        labelColor = when (current) {
-                            AttendanceStatus.PRESENT -> Color(0xFF176B32)
-                            AttendanceStatus.EXCUSED -> Color(0xFF8A4B00)
-                            else -> Color(0xFFB3261E)
-                        }
-                    ),
-                    label = {
-                        Text(
-                            when (current) {
-                                AttendanceStatus.PRESENT -> "Présent"
-                                AttendanceStatus.EXCUSED -> "Absent justifié"
-                                else -> "Absent"
+                // A 3-second hold opens the "absence sur une période" picker instead of the
+                // default (much shorter) system long-press duration, so it doesn't trigger by
+                // accident while cycling through statuses with quick taps.
+                CompositionLocalProvider(
+                    LocalViewConfiguration provides longPressViewConfiguration(LocalViewConfiguration.current, 3000L)
+                ) {
+                    AssistChip(
+                        modifier = Modifier.combinedClickable(
+                            onClick = {},
+                            onLongClick = { periodPlayer = player }
+                        ),
+                        onClick = cycleStatus,
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = when (current) {
+                                AttendanceStatus.PRESENT -> Color(0xFFDDF5E3)
+                                AttendanceStatus.EXCUSED -> Color(0xFFFFE8C2)
+                                else -> Color(0xFFFFDAD6)
+                            },
+                            labelColor = when (current) {
+                                AttendanceStatus.PRESENT -> Color(0xFF176B32)
+                                AttendanceStatus.EXCUSED -> Color(0xFF8A4B00)
+                                else -> Color(0xFFB3261E)
                             }
-                        )
-                    }
-                )
+                        ),
+                        label = {
+                            Text(
+                                when (current) {
+                                    AttendanceStatus.PRESENT -> "Présent"
+                                    AttendanceStatus.EXCUSED -> "Absent justifié"
+                                    else -> "Absent"
+                                }
+                            )
+                        }
+                    )
+                }
             }
         }
         if (showGuestPicker) {
@@ -1347,6 +1365,12 @@ private fun EventDialog(
 }
 
 private fun eventDate(event: VolleyEvent) = java.time.Instant.ofEpochMilli(event.startsAt).atZone(ZoneId.systemDefault()).toLocalDate()
+
+/** A [ViewConfiguration] identical to [base] except for a custom long-press duration. */
+private fun longPressViewConfiguration(base: ViewConfiguration, timeoutMillis: Long): ViewConfiguration =
+    object : ViewConfiguration by base {
+        override val longPressTimeoutMillis: Long = timeoutMillis
+    }
 
 /** True if [event] belongs to a recurring series that has at least one later occurrence. */
 private fun hasFutureInSeries(event: VolleyEvent, events: List<VolleyEvent>): Boolean =

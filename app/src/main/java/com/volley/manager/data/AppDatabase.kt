@@ -111,6 +111,7 @@ interface EventGuestDao {
     @Query("DELETE FROM event_guests WHERE eventId = :eventId") suspend fun deleteForEvent(eventId: Long)
     @Query("DELETE FROM event_guests WHERE eventId IN (SELECT id FROM events WHERE seriesId = :seriesId AND startsAt >= :fromStartsAt)")
     suspend fun deleteForSeriesFrom(seriesId: String, fromStartsAt: Long)
+    @Query("DELETE FROM event_guests WHERE playerId = :playerId") suspend fun deleteForPlayer(playerId: Long)
 }
 
 @Dao
@@ -123,6 +124,7 @@ interface AttendanceDao {
     @Query("DELETE FROM attendance WHERE eventId = :eventId") suspend fun deleteForEvent(eventId: Long)
     @Query("DELETE FROM attendance WHERE eventId IN (SELECT id FROM events WHERE seriesId = :seriesId AND startsAt >= :fromStartsAt)")
     suspend fun deleteForSeriesFrom(seriesId: String, fromStartsAt: Long)
+    @Query("DELETE FROM attendance WHERE playerId = :playerId") suspend fun deleteForPlayer(playerId: Long)
 }
 
 @Dao
@@ -132,6 +134,7 @@ interface AbsenceDao {
     @Query("SELECT * FROM absences")
     fun observeAll(): Flow<List<Absence>>
     @Query("DELETE FROM absences") suspend fun deleteAll()
+    @Query("DELETE FROM absences WHERE playerId = :playerId") suspend fun deleteForPlayer(playerId: Long)
 }
 
 @Dao

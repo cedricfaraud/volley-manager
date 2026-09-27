@@ -157,7 +157,14 @@ class MainViewModel(private val db: AppDatabase) : ViewModel() {
     fun setCollective(player: Player, inCollective: Boolean) =
         viewModelScope.launch { db.players().update(player.copy(isGuest = !inCollective)) }
 
-    fun removePlayer(player: Player) = viewModelScope.launch { db.players().delete(player) }
+    fun removePlayer(player: Player) = viewModelScope.launch {
+        db.withTransaction {
+            db.attendance().deleteForPlayer(player.id)
+            db.eventGuests().deleteForPlayer(player.id)
+            db.absences().deleteForPlayer(player.id)
+            db.players().delete(player)
+        }
+    }
 
     fun addEvent(title: String, date: LocalDate, type: EventType, recurrenceDays: Set<Int>, recurrenceEnd: LocalDate?) =
         viewModelScope.launch {
@@ -599,6 +606,7 @@ private fun PlayersScreen(players: List<Player>, vm: MainViewModel) {
 
 @Composable
 private fun PlayerList(players: List<Player>, vm: MainViewModel, edit: (Player) -> Unit, rate: (Player) -> Unit, modifier: Modifier = Modifier) {
+    var pendingDelete by remember { mutableStateOf<Player?>(null) }
     val sortedPlayers = players.sortedWith(
         compareBy<Player> { positions.indexOf(it.position).takeIf { index -> index >= 0 } ?: positions.size }
             .thenComparator { first, second ->
@@ -622,11 +630,14 @@ private fun PlayerList(players: List<Player>, vm: MainViewModel, edit: (Player) 
             ListItem(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { rate(player) }
+                    .combinedClickable(
+                        onClick = { rate(player) },
+                        onLongClick = { pendingDelete = player }
+                    )
                     .clip(RoundedCornerShape(16.dp))
                     .background(Color.White)
                     .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = .08f), RoundedCornerShape(16.dp)),
-                headlineContent = { Text("${player.firstName} ${player.lastName}") },
+                headlineContent = { Text("${player.jerseyNumber?.let { "N°$it " } ?: ""}${player.firstName} ${player.lastName}") },
                 supportingContent = { Text("${player.position} · ${player.age} ans") },
                 trailingContent = {
                     Row {
@@ -638,6 +649,17 @@ private fun PlayerList(players: List<Player>, vm: MainViewModel, edit: (Player) 
                 }
             )
         }
+    }
+    pendingDelete?.let { player ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Supprimer ce joueur ?") },
+            text = { Text("${player.firstName} ${player.lastName} sera définitivement supprimé, ainsi que son historique de présences.") },
+            confirmButton = {
+                Button(onClick = { vm.removePlayer(player); pendingDelete = null }) { Text("Supprimer") }
+            },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Annuler") } }
+        )
     }
 }
 
@@ -736,7 +758,10 @@ private fun PlayerDialog(player: Player?, guestDefault: Boolean, onDismiss: () -
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(first, { first = it }, label = { Text("Prénom") }, keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words))
                 OutlinedTextField(last, { last = it }, label = { Text("Nom") }, keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words))
-                OutlinedTextField(age, { age = it.filter(Char::isDigit) }, label = { Text("Âge") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(age, { age = it.filter(Char::isDigit) }, label = { Text("Âge") }, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                    OutlinedTextField(jerseyNumber, { jerseyNumber = it.filter(Char::isDigit) }, label = { Text("N°") }, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                }
                 ExposedDropdownMenuBox(expanded, { expanded = !expanded }) {
                     OutlinedTextField(position, {}, readOnly = true, label = { Text("Poste") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) }, modifier = Modifier.menuAnchor())
                     ExposedDropdownMenu(expanded, { expanded = false }) {
@@ -750,10 +775,7 @@ private fun PlayerDialog(player: Player?, guestDefault: Boolean, onDismiss: () -
                 if (showDetails) {
                     OutlinedTextField(email, { email = it }, label = { Text("E-mail") }, isError = !emailValid, supportingText = { if (!emailValid) Text("Format d'e-mail invalide") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
                     OutlinedTextField(phone, { phone = it }, label = { Text("Téléphone") }, isError = !phoneValid, supportingText = { if (!phoneValid) Text("Format de téléphone invalide") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(height, { height = it.filter(Char::isDigit) }, label = { Text("Taille (cm)") }, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                        OutlinedTextField(jerseyNumber, { jerseyNumber = it.filter(Char::isDigit) }, label = { Text("N° maillot") }, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                    }
+                    OutlinedTextField(height, { height = it.filter(Char::isDigit) }, label = { Text("Taille (cm)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                     OutlinedTextField(notes, { notes = it }, label = { Text("Notes") }, minLines = 2, keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences))
                 }
             }
